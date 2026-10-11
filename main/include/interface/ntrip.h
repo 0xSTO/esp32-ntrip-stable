@@ -12,8 +12,13 @@
 #define NEWLINE "\r\n"
 #define NEWLINE_LENGTH 2
 
+#include <stdbool.h>
+#include "interface/ntrip_caster.h"
+
 void ntrip_server_init();
 void ntrip_server_2_init();
+ntrip_caster_handle_t ntrip_server_handle();
+ntrip_caster_handle_t ntrip_server_2_handle();
 
 
 bool ntrip_response_ok(void *response);

@@ -1,1 +1,13 @@
-# put here your custom config value
+menu "esp32-ntrip-stable"
+
+config NTRIP_QEMU_TEST
+    bool "QEMU test build (Ethernet instead of WiFi)"
+    default n
+    depends on ETH_USE_OPENETH
+    help
+        Test-only build for the QEMU harness in test/qemu. Uses the emulated
+        OpenCores Ethernet MAC in place of WiFi (QEMU has no WiFi) and
+        disables the GPIO0 factory-reset button (it reads low in QEMU).
+        Never enable this for a real board.
+
+endmenu

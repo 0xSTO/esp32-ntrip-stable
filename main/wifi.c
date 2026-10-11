@@ -32,6 +32,8 @@
 #include "wifi.h"
 #include "config.h"
 #include "rom/ets_sys.h"
+#include "health.h"
+#include <esp_timer.h>
 
 static const char *TAG = "WIFI";
 
@@ -54,7 +56,17 @@ static retry_delay_handle_t delay_handle;
 static bool ap_active = false;
 static bool sta_active = false;
 
-static bool sta_connected;
+static volatile bool sta_connected;
+
+// Incremented whenever the station loses its link or IP. Caster tasks compare
+// it against the value seen at connect time to detect a dead route quickly.
+static volatile uint32_t sta_ip_generation = 0;
+
+// Reboot if the station has had no IP for this long, unless someone is
+// connected to the AP (they may be fixing the settings).
+#define WIFI_NO_IP_REBOOT_MS (15u * 60u * 1000u)
+static int64_t sta_last_ip_us = 0;
+static bool sta_enabled = false;
 static wifi_ap_record_t sta_ap_info;
 static wifi_sta_list_t ap_sta_list;
 
@@ -62,9 +74,26 @@ static esp_netif_t *esp_netif_ap;
 static esp_netif_t *esp_netif_sta;
 
 static void wifi_sta_status_task(void *ctx) {
+    // Runs continuously. It used to be suspended/resumed from event handlers,
+    // which is racy (a resume before the matching suspend is lost).
     uint8_t rssi_duty = 0;
+    health_handle_t health = health_register("wifi_status", HEALTH_DEFAULT_TIMEOUT_MS);
     while (true) {
+        health_kick(health);
+
         sta_connected = esp_wifi_sta_get_ap_info(&sta_ap_info) == ESP_OK;
+
+        bool has_ip = (xEventGroupGetBits(wifi_event_group) & WIFI_STA_GOT_IPV4_BIT) != 0;
+        int64_t now = esp_timer_get_time();
+        if (has_ip || !sta_enabled) {
+            sta_last_ip_us = now;
+        } else if ((now - sta_last_ip_us) / 1000 > WIFI_NO_IP_REBOOT_MS) {
+            if (xEventGroupGetBits(wifi_event_group) & WIFI_AP_STA_CONNECTED_BIT) {
+                sta_last_ip_us = now; // client on the AP, don't pull the rug
+            } else {
+                health_restart("WiFi: no IP address for %u min", WIFI_NO_IP_REBOOT_MS / 60000u);
+            }
+        }
 
         if (sta_connected) {
             float rssi_percentage = ((float) sta_ap_info.rssi + 90.0f) / 60.0f;
@@ -81,16 +110,27 @@ static void wifi_sta_status_task(void *ctx) {
 }
 
 static void wifi_sta_reconnect_task(void *ctx) {
+    // Woken by a task notification from the disconnect handler. Notifications
+    // latch, so a disconnect that arrives while we are busy is never lost
+    // (vTaskSuspend/vTaskResume could lose it and leave WiFi down for good).
+    health_handle_t health = health_register("wifi_reconnect", HEALTH_DEFAULT_TIMEOUT_MS);
     while (true) {
+        health_kick(health);
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000)) == 0) continue;
+
         int attempts = retry_delay(delay_handle);
+        health_kick(health);
+
+        if (sta_connected) continue;
 
         ESP_LOGI(TAG, "Station Reconnecting: %s, attempts: %d", config_sta.sta.ssid, attempts);
         uart_nmea("$PESP,WIFI,STA,RECONNECTING,%s,%d", config_sta.sta.ssid, attempts);
 
-        esp_wifi_connect();
-
-        // Wait for next disconnect event
-        vTaskSuspend(NULL);
+        esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
+            xTaskNotifyGive(xTaskGetCurrentTaskHandle()); // try again after the next delay
+        }
     }
 }
 
@@ -118,12 +158,6 @@ static void handle_sta_connected(void *esp_netif, esp_event_base_t base, int32_t
 
     retry_reset(delay_handle);
 
-    // Tracking status
-    if (sta_status_task != NULL) vTaskResume(sta_status_task);
-
-    // No longer attempting to reconnect
-    if (sta_reconnect_task != NULL) vTaskSuspend(sta_reconnect_task);
-
     if (status_led_sta != NULL) status_led_sta->flashing_mode = STATUS_LED_FADE;
 }
 
@@ -149,12 +183,10 @@ static void handle_sta_disconnected(void *esp_netif, esp_event_base_t base, int3
     uart_nmea("$PESP,WIFI,STA,DISCONNECTED,%.*s,%d,%s", event->ssid_len, event->ssid, event->reason, reason);
 
     sta_connected = false;
-
-    // No longer tracking status
-    if (sta_status_task != NULL) vTaskSuspend(sta_status_task);
+    sta_ip_generation++;
 
     // Attempting to reconnect
-    if (sta_reconnect_task != NULL) vTaskResume(sta_reconnect_task);
+    if (sta_reconnect_task != NULL) xTaskNotifyGive(sta_reconnect_task);
 
     // Disable RSSI led
     rssi_led_set(0);
@@ -230,6 +262,7 @@ static void handle_sta_lost_ip(void *esp_netif, esp_event_base_t base, int32_t e
     ESP_LOGI(TAG, "IP_EVENT_STA_LOST_IP");
     uart_nmea("$PESP,WIFI,STA,IP_LOST");
 
+    sta_ip_generation++;
     xEventGroupClearBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT);
 }
 
@@ -244,12 +277,67 @@ void wait_for_ip() {
     xEventGroupWaitBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT, false, false, portMAX_DELAY);
 }
 
+bool wait_for_ip_timeout(uint32_t timeout_ms) {
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT, false, false,
+            pdMS_TO_TICKS(timeout_ms));
+    return (bits & WIFI_STA_GOT_IPV4_BIT) != 0;
+}
+
+bool wifi_sta_has_ip() {
+    return (xEventGroupGetBits(wifi_event_group) & WIFI_STA_GOT_IPV4_BIT) != 0;
+}
+
+uint32_t wifi_sta_ip_generation() {
+    return sta_ip_generation;
+}
+
 void wait_for_network() {
     xEventGroupWaitBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT | WIFI_AP_STA_CONNECTED_BIT, false, false, portMAX_DELAY);
 }
 
+#if CONFIG_NTRIP_QEMU_TEST
+#include <esp_eth.h>
+
+// QEMU has no WiFi. The test build brings up the emulated OpenCores Ethernet
+// and drives the same "station has IP" state the casters watch.
+static void handle_eth_got_ip(void *arg, esp_event_base_t base, int32_t event_id, void *event_data) {
+    const ip_event_got_ip_t *event = (const ip_event_got_ip_t *) event_data;
+    ESP_LOGI(TAG, "QEMU ETH got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+    xEventGroupSetBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT);
+}
+
+static void handle_eth_disconnected(void *arg, esp_event_base_t base, int32_t event_id, void *event_data) {
+    ESP_LOGW(TAG, "QEMU ETH link down");
+    sta_ip_generation++;
+    xEventGroupClearBits(wifi_event_group, WIFI_STA_GOT_IPV4_BIT);
+}
+
+static void qemu_eth_init() {
+    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_sta = esp_netif_new(&netif_cfg);
+
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+    phy_config.autonego_timeout_ms = 100;
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_config);
+    esp_eth_phy_t *phy = esp_eth_phy_new_dp83848(&phy_config);
+    esp_eth_config_t config = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&config, &eth_handle));
+    ESP_ERROR_CHECK(esp_netif_attach(esp_netif_sta, esp_eth_new_netif_glue(eth_handle)));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &handle_eth_got_ip, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &handle_eth_disconnected, NULL));
+    ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+}
+#endif
+
 void wifi_init() {
     wifi_event_group = xEventGroupCreate();
+#if CONFIG_NTRIP_QEMU_TEST
+    ESP_LOGW(TAG, "QEMU TEST BUILD: using emulated Ethernet instead of WiFi");
+    qemu_eth_init();
+    return;
+#endif
     wifi_init_config_t wifi_init_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
@@ -391,22 +479,31 @@ void wifi_init() {
         ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &config_sta));
         ESP_ERROR_CHECK(esp_wifi_set_bandwidth(ESP_IF_WIFI_STA, WIFI_BW_HT20));
 
-        // Keep track of connection for RSSI indicator, but suspend until connected
-        xTaskCreate(wifi_sta_status_task, "wifi_sta_status", 2048, NULL, TASK_PRIORITY_WIFI_STATUS, &sta_status_task);
-        vTaskSuspend(sta_status_task);
+        sta_enabled = true;
+        sta_last_ip_us = esp_timer_get_time();
+
+        // Keep track of connection for RSSI indicator and the no-IP reboot
+        xTaskCreate(wifi_sta_status_task, "wifi_sta_status", 3072, NULL, TASK_PRIORITY_WIFI_STATUS, &sta_status_task);
 
         // Reconnect when disconnected
         xTaskCreate(wifi_sta_reconnect_task, "wifi_sta_reconnect", 4096, NULL, TASK_PRIORITY_WIFI_STATUS, &sta_reconnect_task);
-        vTaskSuspend(sta_reconnect_task);
 
         config_color_t sta_led_color = config_get_color(CONF_ITEM(KEY_CONFIG_WIFI_STA_COLOR));
         if (sta_led_color.rgba != 0) status_led_sta = status_led_add(sta_led_color.rgba, STATUS_LED_STATIC, 500, 2000, 0);
     }
 
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Modem sleep adds latency spikes and has been linked to dropped
+    // associations on some routers; a base station is mains powered anyway.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 }
 
 wifi_sta_list_t *wifi_ap_sta_list() {
+    if (!ap_active) {
+        ap_sta_list.num = 0;
+        return &ap_sta_list;
+    }
     esp_wifi_ap_get_sta_list(&ap_sta_list);
     return &ap_sta_list;
 }

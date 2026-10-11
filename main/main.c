@@ -22,6 +22,7 @@
 #include <esp_sntp.h>
 #include <core_dump.h>
 #include <esp_ota_ops.h>
+#include <esp_app_desc.h>
 #include <stream_stats.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -37,11 +38,13 @@
 #include "uart.h"
 #include "interface/ntrip.h"
 #include "tasks.h"
+#include "health.h"
 
 static const char *TAG = "MAIN";
 
 static char *reset_reason_name(esp_reset_reason_t reason);
 
+#if !CONFIG_NTRIP_QEMU_TEST
 static void reset_button_task() {
     QueueHandle_t button_queue = button_init(PIN_BIT(GPIO_NUM_0));
     gpio_set_pull_mode(GPIO_NUM_0, GPIO_PULLUP_ONLY);
@@ -56,6 +59,7 @@ static void reset_button_task() {
         }
     }
 }
+#endif
 
 static void sntp_time_set_handler(struct timeval *tv) {
     ESP_LOGI(TAG, "Synced time from SNTP");
@@ -75,7 +79,11 @@ void app_main()
 
     core_dump_check();
 
+    health_init();
+
+#if !CONFIG_NTRIP_QEMU_TEST
     xTaskCreate(reset_button_task, "reset_button", 4096, NULL, TASK_PRIORITY_RESET_BUTTON, NULL);
+#endif
 
     stream_stats_init();
 
@@ -84,11 +92,13 @@ void app_main()
 
     esp_reset_reason_t reset_reason = esp_reset_reason();
 
-    const esp_app_desc_t *app_desc = esp_ota_get_app_description();
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     char elf_buffer[17];
-    esp_ota_get_app_elf_sha256(elf_buffer, sizeof(elf_buffer));
+    esp_app_get_elf_sha256(elf_buffer, sizeof(elf_buffer));
 
+    const char *restart_cause = health_restart_cause();
     uart_nmea("$PESP,INIT,START,%s,%s", app_desc->version, reset_reason_name(reset_reason));
+    if (restart_cause != NULL) uart_nmea("$PESP,INIT,RESTART_CAUSE,%s", restart_cause);
 
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║ ESP32 XBee %-33s "                          "║", app_desc->version);
@@ -98,6 +108,7 @@ void app_main()
     ESP_LOGI(TAG, "║ ESP-IDF: %-35s "                            "║", app_desc->idf_ver);
     ESP_LOGI(TAG, "╟──────────────────────────────────────────────╢");
     ESP_LOGI(TAG, "║ Reset reason: %-30s "                       "║", reset_reason_name(reset_reason));
+    if (restart_cause != NULL) ESP_LOGW(TAG, "Restart cause: %s", restart_cause);
     ESP_LOGI(TAG, "╟──────────────────────────────────────────────╢");
     ESP_LOGI(TAG, "║ Author: Nebojša Cvetković                    ║");
     ESP_LOGI(TAG, "║ Source: https://github.com/nebkat/esp32-xbee ║");
@@ -137,11 +148,11 @@ void app_main()
 
     wait_for_ip();
 
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
     sntp_set_sync_mode(SNTP_SYNC_MODE_SMOOTH);
     sntp_set_time_sync_notification_cb(sntp_time_set_handler);
-    sntp_init();
+    esp_sntp_init();
 
 #ifdef DEBUG_HEAP
     while (true) {
