@@ -23,3 +23,20 @@ The script feeds framed, sequence-numbered data into UART0 and checks (about 6 m
 
 Limitation: slirp buffers without limit, so a caster that stops reading never pushes back on the ESP32's
 TCP stack. `test/host` covers back-pressure with real kernel sockets.
+
+## Receiver page browser test
+
+`run_ui_test.py` boots the same QEMU build with a fake UM980 on the UART (it streams the recorded RTCM and
+answers each command with `$command,<cmd>,response: OK`, or a scripted failure) and drives `receiver.html`
+in headless Chromium:
+
+- "Apply base setup" completes only when every command is confirmed, waits for the receiver to answer
+  `VERSION` again after `CONFIG SIGNALGROUP 2`, and falls back from `GNGSV` to `GPGSV`
+- a rejected or unanswered command stops the sequence before `SAVECONFIG`
+- bad coordinates (e.g. comma decimals) are refused in the dialog
+- manual commands and replies show in the console; no JavaScript errors
+
+```sh
+pip install playwright   # uses the system Chromium; first page load is slow in QEMU (flash writes)
+python test/qemu/run_ui_test.py build_qemu
+```

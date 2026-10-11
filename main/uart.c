@@ -26,6 +26,7 @@
 #include "config.h"
 #include "tasks.h"
 #include "health.h"
+#include "receiver.h"
 
 static const char *TAG = "UART";
 
@@ -52,6 +53,8 @@ void uart_add_read_sink(uart_read_sink_t fn, void *ctx) {
 }
 
 static void dispatch_read(const uint8_t *data, size_t len) {
+    // Called by the receiver module with RTCM frames (or the raw stream when
+    // the RTCM-only filter is off).
     int count = read_sink_count;
     for (int i = 0; i < count; i++) read_sinks[i].fn(read_sinks[i].ctx, data, len);
 }
@@ -67,6 +70,7 @@ static void uart_task(void *ctx);
 
 void uart_init() {
     uart_log_forward = config_get_bool1(CONF_ITEM(KEY_CONFIG_UART_LOG_FORWARD));
+    receiver_init(config_get_bool1(CONF_ITEM(KEY_CONFIG_UART_RTCM_ONLY)), dispatch_read);
 
     uart_port = config_get_u8(CONF_ITEM(KEY_CONFIG_UART_NUM));
 
@@ -108,6 +112,7 @@ void uart_init() {
 
 static void uart_task(void *ctx) {
     static uint8_t buffer[UART_BUFFER_SIZE];
+    int idle_reads = 0;
     health_handle_t health = health_register("uart_task", HEALTH_DEFAULT_TIMEOUT_MS);
 
     while (true) {
@@ -119,17 +124,21 @@ static void uart_task(void *ctx) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         } else if (len == 0) {
+            // ~100 ms with no data: let the framer give up on anything held.
+            if (++idle_reads == 2) receiver_idle();
             continue;
         }
+        idle_reads = 0;
 
         stream_stats_increment(stream_stats, len, 0);
 
-        dispatch_read(buffer, len);
+        // Split into RTCM (to casters) and text (NMEA / command replies).
+        receiver_process(buffer, len);
     }
 }
 
 void uart_inject(void *buf, size_t len) {
-    dispatch_read(buf, len);
+    receiver_process(buf, len);
 }
 
 int uart_log(char *buf, size_t len) {
@@ -138,6 +147,11 @@ int uart_log(char *buf, size_t len) {
 }
 
 int uart_nmea(const char *fmt, ...) {
+    // $PESP status sentences were meant for an XBee host device. Sent to a GNSS
+    // receiver they only provoke "PARSING FAILD" replies, which then went to
+    // the casters. Only send them when log forwarding is switched on.
+    if (!uart_log_forward) return 0;
+
     va_list args;
     va_start(args, fmt);
 

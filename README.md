@@ -4,6 +4,10 @@ Stable dual-caster NTRIP base station firmware for ESP32 (fork of [esp32-ntrip-D
 This fork fixes the dropped streams (rtk2go "restarts") caused by blocking socket writes in the shared event
 loop, plus a set of WiFi, watchdog and memory-safety fixes. See [STABILITY_CHANGES.md](STABILITY_CHANGES.md).
 
+It also adds a **Receiver** page: an onocoy-style live view (satellites, signals, C/N0 per band, sky view,
+base position) and a console to send UM980 commands from the browser, with a checked "Apply base setup".
+Casters now receive only valid RTCM frames. See [RECEIVER.md](RECEIVER.md).
+
 Target: classic ESP32 (e.g. ESP32-WROOM-32U), root `main/` tree, ESP-IDF v5.4.2:
 
 ```sh

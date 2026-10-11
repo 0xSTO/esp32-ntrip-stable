@@ -213,6 +213,10 @@ const config_item_t CONFIG_ITEMS[] = {
                 .key = KEY_CONFIG_UART_LOG_FORWARD,
                 .type = CONFIG_ITEM_TYPE_BOOL,
                 .def.bool1 = false
+        }, {
+                .key = KEY_CONFIG_UART_RTCM_ONLY,
+                .type = CONFIG_ITEM_TYPE_BOOL,
+                .def.bool1 = true
         },
 
         // WiFi
