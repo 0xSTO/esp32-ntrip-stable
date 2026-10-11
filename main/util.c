@@ -21,6 +21,10 @@
 #include <mbedtls/base64.h>
 #include <sys/socket.h>
 #include <lwip/netdb.h>
+#include <lwip/sockets.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <ctype.h>
 
 #include "util.h"
 
@@ -182,4 +186,81 @@ esp_err_t write_all(int fd, char *buf, size_t buf_len) {
         buf_len -= ret;
     }
     return ESP_OK;
+}
+
+static int connect_with_timeout(int sock, const struct sockaddr *addr, socklen_t addrlen, int timeout_ms) {
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0 || fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+
+    int ret = connect(sock, addr, addrlen);
+    if (ret < 0 && errno != EINPROGRESS) return -1;
+
+    if (ret < 0) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(sock, &wfds);
+        struct timeval tv = {.tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000};
+        ret = select(sock + 1, NULL, &wfds, NULL, &tv);
+        if (ret <= 0) {
+            if (ret == 0) errno = ETIMEDOUT;
+            return -1;
+        }
+
+        int so_error = 0;
+        socklen_t len = sizeof(so_error);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0) return -1;
+        if (so_error != 0) {
+            errno = so_error;
+            return -1;
+        }
+    }
+
+    // Back to blocking; callers use timeouts or MSG_DONTWAIT as needed
+    if (fcntl(sock, F_SETFL, flags & ~O_NONBLOCK) < 0) return -1;
+    return 0;
+}
+
+int connect_socket_timeout(const char *host, int port, int timeout_ms) {
+    struct addrinfo addr_hints = {
+            .ai_family = AF_UNSPEC,
+            .ai_socktype = SOCK_STREAM,
+            .ai_flags = AI_NUMERICSERV,
+    };
+    struct addrinfo *addr_results = NULL;
+
+    char port_string[6];
+    snprintf(port_string, sizeof(port_string), "%u", (unsigned) port);
+    int err = getaddrinfo(host, port_string, &addr_hints, &addr_results);
+    if (err != 0 || addr_results == NULL) return CONNECT_SOCKET_ERROR_RESOLVE;
+
+    int sock = -1;
+    for (struct addrinfo *a = addr_results; a != NULL; a = a->ai_next) {
+        sock = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (sock < 0) continue;
+        if (connect_with_timeout(sock, a->ai_addr, a->ai_addrlen, timeout_ms) == 0) break;
+        int saved = errno;
+        close(sock);
+        errno = saved;
+        sock = -1;
+    }
+    freeaddrinfo(addr_results);
+
+    if (sock < 0) return CONNECT_SOCKET_ERROR_CONNECT;
+    return sock;
+}
+
+int socket_set_timeouts(int sock, int timeout_ms) {
+    struct timeval tv = {.tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000};
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return -1;
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) return -1;
+    return 0;
+}
+
+int socket_set_keepalive(int sock, int idle_s, int interval_s, int count) {
+    int on = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) != 0) return -1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &idle_s, sizeof(idle_s)) != 0) return -1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &interval_s, sizeof(interval_s)) != 0) return -1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count)) != 0) return -1;
+    return 0;
 }

@@ -322,6 +322,21 @@
                             " bytes out (" + (stats.rate.out * 8) + "bps)");
                     });
 
+                    // Caster connection state
+                    $('.caster-status').each(function() {
+                        const caster = data.casters ? data.casters[$(this).data('caster')] : undefined;
+                        if (typeof caster === 'undefined' || caster.state === 'disabled') {
+                            $(this).text('');
+                            return;
+                        }
+                        let text = caster.state;
+                        if (caster.state === 'connected') text += ' for ' + secondsToHHMMSS(caster.uptime);
+                        text += ' · logins ' + caster.sessions + ', failed ' + caster.failures;
+                        if (caster.dropped > 0) text += ', dropped ' + humanDataSize(caster.dropped);
+                        if (caster.last_disconnect) text += ' · last: ' + caster.last_disconnect;
+                        $(this).text(text);
+                    });
+
                     // WiFi
                     let wifi = data.wifi;
 
@@ -931,6 +946,7 @@
                         <div class="card-header">
                             NTRIP server A
                             <small class="ntrip-server-stats stream-stats" data-stream="ntrip_server"></small>
+                            <small class="caster-status d-block text-muted" data-caster="ntrip_server"></small>
                             <div class="custom-control custom-switch d-inline float-right">
                                 <input type="checkbox" name="ntr_srv_active" value="1" class="custom-control-input" id="switch-ntrip-server">
                                 <label class="custom-control-label" for="switch-ntrip-server"></label>
@@ -990,7 +1006,8 @@
                     <div class="card mb-3">
                         <div class="card-header">
                             NTRIP server B
-                            <small class="ntrip-server-2-stats stream-stats" data-stream="ntrip_server"></small>
+                            <small class="ntrip-server-2-stats stream-stats" data-stream="ntrip_server_2"></small>
+                            <small class="caster-status d-block text-muted" data-caster="ntrip_server_2"></small>
                             <div class="custom-control custom-switch d-inline float-right">
                                 <input type="checkbox" name="ntr_srv2_active" value="1" class="custom-control-input" id="switch-ntrip-server-2">
                                 <label class="custom-control-label" for="switch-ntrip-server-2"></label>

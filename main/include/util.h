@@ -26,6 +26,11 @@ char *sockaddrtostr(struct sockaddr *a);
 char *extract_http_header(const char *buffer, const char *key);
 
 int connect_socket(char *host, int port, int socktype);
+// TCP connect with a bounded connect time. Returns a blocking socket or a CONNECT_SOCKET_ERROR_* code.
+int connect_socket_timeout(const char *host, int port, int timeout_ms);
+int socket_set_timeouts(int sock, int timeout_ms);
+int socket_set_keepalive(int sock, int idle_s, int interval_s, int count);
 char *http_auth_basic_header(const char *username, const char *password);
+esp_err_t write_all(int fd, char *buf, size_t buf_len);
 
 #endif //ESP32_XBEE_UTIL_H

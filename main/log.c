@@ -42,20 +42,40 @@ esp_err_t log_init() {
     return ESP_OK;
 }
 
-int log_vprintf(const char * format, va_list arg) {
-    char buffer[512];
-    int n = vsnprintf(buffer, 512, format, arg);
+#define LOG_LINE_MAX 512
 
-    if (n > 512) {
-        n = 512;
+// Strip ANSI colour codes and trailing newlines from a log line. out may equal in. Returns the new length. Works whether or not colours are enabled
+// (the previous version assumed they were and could compute a negative length).
+static size_t strip_for_web(const char *in, size_t len, char *out) {
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (in[i] == '\033' && i + 1 < len && in[i + 1] == '[') {
+            i += 2;
+            while (i < len && in[i] != 'm') i++;
+            continue;
+        }
+        out[o++] = in[i];
     }
+    while (o > 0 && (out[o - 1] == '\n' || out[o - 1] == '\r')) o--;
+    return o;
+}
 
-    // Remove log colors for web log buffer
-    xRingbufferSend(ringbuf_handle, buffer + strlen(LOG_COLOR_E),
-            n - strlen(LOG_COLOR_E) - strlen(LOG_RESET_COLOR) - 1, 0);
-    xRingbufferSend(ringbuf_handle, "\n", 1, 0);
+int log_vprintf(const char * format, va_list arg) {
+    char buffer[LOG_LINE_MAX];
+    int n = vsnprintf(buffer, sizeof(buffer), format, arg);
+    if (n < 0) return n;
 
-    uart_log(buffer, n);
+    // vsnprintf returns the length it wanted, not what fits
+    size_t len = (size_t) n < sizeof(buffer) ? (size_t) n : sizeof(buffer) - 1;
+
+    // Strip in place (output never runs ahead of input) to keep stack use low:
+    // this runs on whatever task logged, some of which have small stacks.
+    len = strip_for_web(buffer, len, buffer);
+    if (len < sizeof(buffer)) buffer[len++] = '\n';
+
+    if (ringbuf_handle != NULL) xRingbufferSend(ringbuf_handle, buffer, len, 0);
+
+    uart_log(buffer, len);
 
     return n;
 }

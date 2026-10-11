@@ -36,6 +36,9 @@ void wifi_ap_status(wifi_ap_status_t *status);
 void wifi_sta_status(wifi_sta_status_t *status);
 
 void wait_for_ip();
+bool wait_for_ip_timeout(uint32_t timeout_ms);
+bool wifi_sta_has_ip();
+uint32_t wifi_sta_ip_generation();
 void wait_for_network();
 
 const char *esp_netif_name(esp_netif_t *esp_netif);

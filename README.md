@@ -1,6 +1,18 @@
 # esp32-ntrip-stable
 Stable dual-caster NTRIP base station firmware for ESP32 (fork of [esp32-ntrip-DUO](https://github.com/incarvr6/esp32-ntrip-DUO), imported at upstream commit `28ef71b`).
 
+This fork fixes the dropped streams (rtk2go "restarts") caused by blocking socket writes in the shared event
+loop, plus a set of WiFi, watchdog and memory-safety fixes. See [STABILITY_CHANGES.md](STABILITY_CHANGES.md).
+
+Target: classic ESP32 (e.g. ESP32-WROOM-32U), root `main/` tree, ESP-IDF v5.4.2:
+
+```sh
+idf.py build                 # firmware
+test/host/run_tests.sh       # host unit tests
+```
+
+The prebuilt `.bin` files and the `esp32s3test` tree below are upstream's and do not include these fixes.
+
 ---
 
 ## Upstream: ESP32 NTRIP Duo
