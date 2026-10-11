@@ -107,6 +107,7 @@ typedef struct config_item {
 #define KEY_CONFIG_UART_FLOW_CTRL_RTS "uart_fc_rts"
 #define KEY_CONFIG_UART_FLOW_CTRL_CTS "uart_fc_cts"
 #define KEY_CONFIG_UART_LOG_FORWARD "uart_log_fwd"
+#define KEY_CONFIG_UART_RTCM_ONLY "uart_rtcm_only"
 
 // WiFi
 #define KEY_CONFIG_WIFI_AP_ACTIVE "w_ap_active"

@@ -38,6 +38,7 @@
 #include <lwip/sockets.h>
 #include <esp_timer.h>
 #include "web_server.h"
+#include "receiver.h"
 
 // Max length a file path can have on storage
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -411,7 +412,10 @@ static esp_err_t file_get_handler(httpd_req_t *req) {
     // Close file after sending complete
     fclose(fd);
 
-    // Store CRC hash
+    // Store CRC hash, only if we didn't already have one: rewriting it after
+    // every download blocked the web server for the duration of a flash write
+    // and wore the flash for nothing.
+    if (strlen(etag) > 0) return ESP_OK;
     fd_hash = fopen(file_hash_path, "w");
     if (fd_hash != NULL) {
         fwrite(&crc, sizeof(crc), 1, fd_hash);
@@ -732,6 +736,70 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     return json_response(req, root);
 }
 
+// --- GNSS receiver: live view, console, commands -----------------------------
+
+#define RECEIVER_JSON_SIZE 16384
+// The HTTP server runs one handler at a time, so one static buffer is enough
+// and avoids allocating 16 KB on every poll (heap fragmentation).
+static char receiver_json[RECEIVER_JSON_SIZE];
+
+static esp_err_t send_json_buffer(httpd_req_t *req, const char *json, int len) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, json, len);
+}
+
+static esp_err_t receiver_live_get_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+    int n = receiver_live_json(receiver_json, RECEIVER_JSON_SIZE);
+    return n < 0 ? httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Live view unavailable")
+                 : send_json_buffer(req, receiver_json, n);
+}
+
+static esp_err_t receiver_console_get_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+    uint32_t since = 0;
+    char query[48], value[16];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "since", value, sizeof(value)) == ESP_OK) {
+        since = (uint32_t) strtoul(value, NULL, 10);
+    }
+    int n = receiver_console_json(since, receiver_json, RECEIVER_JSON_SIZE);
+    return n < 0 ? httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Console unavailable")
+                 : send_json_buffer(req, receiver_json, n);
+}
+
+static esp_err_t receiver_command_post_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+    char body[320];
+    if (req->content_len >= sizeof(body)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Command too long");
+    size_t got = 0;
+    int timeouts = 0;
+    while (got < req->content_len) {
+        int ret = httpd_req_recv(req, body + got, req->content_len - got);
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) continue;
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+            return ESP_FAIL;
+        }
+        if (ret <= 0) return ESP_FAIL;
+        got += (size_t) ret;
+    }
+    body[got] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    cJSON *cmd = root ? cJSON_GetObjectItem(root, "cmd") : NULL;
+    cJSON *confirm = root ? cJSON_GetObjectItem(root, "confirm") : NULL;
+    const char *error = "Missing \"cmd\"";
+    if (cJSON_IsString(cmd)) error = receiver_send_command(cmd->valuestring, cJSON_IsTrue(confirm));
+    cJSON_Delete(root);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", error == NULL);
+    if (error) cJSON_AddStringToObject(resp, "error", error);
+    return json_response(req, resp);
+}
+
 static esp_err_t wifi_scan_get_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -777,6 +845,7 @@ static httpd_handle_t web_server_start(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
+    config.max_uri_handlers = 16;
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
@@ -790,6 +859,10 @@ static httpd_handle_t web_server_start(void)
         register_uri_handler(server, "/heap_info", HTTP_GET, heap_info_get_handler);
 
         register_uri_handler(server, "/wifi/scan", HTTP_GET, wifi_scan_get_handler);
+
+        register_uri_handler(server, "/receiver/live", HTTP_GET, receiver_live_get_handler);
+        register_uri_handler(server, "/receiver/console", HTTP_GET, receiver_console_get_handler);
+        register_uri_handler(server, "/receiver/command", HTTP_POST, receiver_command_post_handler);
 
         register_uri_handler(server, "/*", HTTP_GET, file_get_handler);
     }

@@ -9,3 +9,17 @@ cc -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
     test_main.c "$ROOT/main/byte_ring.c" "$ROOT/main/backoff.c" "$ROOT/main/stream_sender.c" \
     -o "$OUT"
 "$OUT"
+
+# Receiver framer / GNSS monitor / console log
+RX=${TMPDIR:-/tmp}/esp32_ntrip_receiver_tests
+cc -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+    -I"$ROOT/main/include" \
+    receiver_driver.c "$ROOT/main/rtcm_framer.c" "$ROOT/main/gnss_monitor.c" "$ROOT/main/line_log.c" \
+    -lm -o "$RX"
+"$RX"
+for seed in 1 2 3 4 5; do
+    D=$(mktemp -d)
+    "$RX" stream data/receiver_stream.bin "$D" "$seed" >/dev/null
+    python3 check_receiver.py "$D"
+    rm -rf "$D"
+done

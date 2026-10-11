@@ -21,6 +21,7 @@ real back-pressure with kernel sockets.
 Usage: run_qemu_test.py <build_dir>   (needs IDF environment for esptool, nvs gen, qemu)
 """
 
+import json
 import os
 import socket
 import struct
@@ -29,11 +30,14 @@ import sys
 import tempfile
 import threading
 import time
-import zlib
+import urllib.request
 
 PORT_A = 21010
 PORT_B = 21011
 UART_PORT = 5555
+HTTP_PORT = 18080
+HERE = os.path.dirname(os.path.abspath(__file__))
+RECORDED = os.path.join(HERE, "..", "host", "data", "receiver_stream.bin")
 FEED_RATE = 1000  # bytes/s
 
 START = time.monotonic()
@@ -49,14 +53,43 @@ def log(msg):
 
 # --------------------------------------------------------------------------- framing
 
+TEST_MSG = 4093  # proprietary RTCM message number used for the sequence frames
+
+
+def crc24q(data):
+    crc = 0
+    for b in data:
+        crc ^= b << 16
+        for _ in range(8):
+            crc <<= 1
+            if crc & 0x1000000:
+                crc ^= 0x1864CFB
+    return crc & 0xFFFFFF
+
+
+def rtcm_frame(payload):
+    body = bytes([0xD3, (len(payload) >> 8) & 3, len(payload) & 0xFF]) + payload
+    c = crc24q(body)
+    return body + bytes([c >> 16, (c >> 8) & 0xFF, c & 0xFF])
+
+
+def nmea_line(body):
+    """body like '$GPGSV,...*': adds checksum and CRLF."""
+    cs = 0
+    for ch in body[1:-1]:
+        cs ^= ord(ch)
+    return f"{body}{cs:02X}\r\n".encode()
+
+
 def make_frame(seq):
-    payload = struct.pack("<I", seq) + bytes((seq + i) & 0xFF for i in range(96))
-    body = b"\xd3" + struct.pack(">H", len(payload)) + payload
-    return body + struct.pack("<I", zlib.crc32(body))
+    # 12-bit message number, 4 spare bits, 32-bit sequence, filler: 100 bytes
+    payload = struct.pack(">HI", TEST_MSG << 4, seq) + bytes((seq + i) & 0xFF for i in range(94))
+    return rtcm_frame(payload)
 
 
 class FrameChecker:
-    """Parses the byte stream of one caster connection and checks frames."""
+    """Parses the byte stream of one caster connection: it must contain only
+    valid RTCM frames (any message type); sequence frames must be in order."""
 
     def __init__(self):
         self.buf = b""
@@ -65,44 +98,46 @@ class FrameChecker:
         self.gaps = 0
         self.last_seq = None
         self.started = False
+        self.frames_any = 0
+        self.gap_list = []
+        self.text_seen = b""
 
     def feed(self, data):
         self.buf += data
         while True:
-            i = self.buf.find(b"\xd3")
-            if i < 0:
-                self.buf = b""
+            if not self.buf:
                 return
-            if i > 0:
-                if self.started:
-                    self.bad += 1  # garbage between frames
-                self.buf = self.buf[i:]
+            if self.buf[0] != 0xD3:
+                # The ESP32 must only ever send whole RTCM frames
+                self.bad += 1
+                self.text_seen += self.buf[:1]
+                self.buf = self.buf[1:]
+                continue
             if len(self.buf) < 3:
                 return
-            (length,) = struct.unpack(">H", self.buf[1:3])
-            total = 3 + length + 4
-            if length != 100:
-                self.buf = self.buf[1:]
-                if self.started:
-                    self.bad += 1
-                continue
+            length = ((self.buf[1] & 3) << 8) | self.buf[2]
+            total = 3 + length + 3
             if len(self.buf) < total:
                 return
             frame = self.buf[:total]
-            (crc,) = struct.unpack("<I", frame[-4:])
-            if zlib.crc32(frame[:-4]) != crc:
+            if (self.buf[1] & 0xFC) or crc24q(frame[:-3]) != int.from_bytes(frame[-3:], "big"):
                 # The first frame of a connection may be cut (ring cleared at connect)
                 if self.started:
                     self.bad += 1
                 self.buf = self.buf[1:]
                 continue
-            (seq,) = struct.unpack("<I", frame[3:7])
+            self.buf = self.buf[total:]
+            self.started = True
+            self.frames_any += 1
+            msg = (frame[3] << 4) | (frame[4] >> 4)
+            if msg != TEST_MSG:
+                continue
+            (seq,) = struct.unpack(">I", frame[5:9])
             if self.last_seq is not None and seq != self.last_seq + 1:
                 self.gaps += 1
+                self.gap_list.append((self.last_seq, seq))
             self.last_seq = seq
             self.frames += 1
-            self.started = True
-            self.buf = self.buf[total:]
 
 
 # --------------------------------------------------------------------------- fake caster
@@ -239,7 +274,7 @@ def main():
         "-drive", f"file={flash},if=mtd,format=raw",
         "-serial", f"tcp:127.0.0.1:{UART_PORT},server=on,wait=on",
         "-serial", f"file:{console_log}",
-        "-nic", "user,model=open_eth",
+        "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     uart = None
@@ -273,6 +308,11 @@ def main():
 
     feeding = threading.Event()
 
+    text_lines = [
+        nmea_line("$GPGSV,1,1,02,02,45,123,44,05,30,045,40,1*"),
+        b"$command,VERSION,response: OK*45\r\n",
+    ]
+
     def feeder():
         seq = 0
         frame_len = len(make_frame(0))
@@ -282,6 +322,9 @@ def main():
             if feeding.is_set():
                 try:
                     uart.sendall(make_frame(seq))
+                    if seq % 20 == 10:
+                        # NMEA and command replies mixed in: must never reach a caster
+                        uart.sendall(text_lines[(seq // 20) % 2])
                 except OSError:
                     return
                 seq += 1
@@ -310,6 +353,73 @@ def main():
         # Boot
         booted = wait_for(lambda: any("INIT,COMPLETE" in l for _, l in uart_lines), 90)
         check(booted, "firmware booted")
+        # Phase 0: receiver side channel, using a real RTCM recording with
+        # NMEA, command replies, garbage and corrupt frames mixed in
+        rec = open(RECORDED, "rb").read()
+        log(f"feeding recorded receiver stream ({len(rec)} bytes)")
+        # Paced like a real receiver at 115200 baud would be at most; QEMU's UART
+        # has no flow control and drops bytes if fed in large bursts.
+        def feed_paced(data, rate=3000):
+            for i in range(0, len(data), 256):
+                uart.sendall(data[i:i + 256])
+                time.sleep(256 / rate)
+        feed_paced(rec)
+        ok = wait_for(lambda: a.checkers and b.checkers, 60)
+        check(ok, "both casters logged in on the recorded stream")
+
+        def http(path, body=None):
+            req = urllib.request.Request(f"http://127.0.0.1:{HTTP_PORT}{path}",
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read())
+
+        # Replay the tail of the recording so the live view is fresh
+        feed_paced(rec[-12000:])
+        # A real receiver repeats GSV every few seconds; the recording has it near the start only
+        expect = json.load(open(os.path.join(HERE, "..", "host", "data", "receiver_expect.json")))
+        feed_paced("".join(l + "\r\n" for l in expect["lines"] if "GSV" in l).encode())
+        time.sleep(1)
+        live = http("/receiver/live")
+        open(os.path.join(workdir, "live.json"), "w").write(json.dumps(live, indent=1))
+        check(live["satellites"] >= 20 and live["signals"] >= 40,
+              f"live view: {live['satellites']} satellites, {live['signals']} signals, mean C/N0 {live['mean_cnr']}")
+        pos = live.get("position", {})
+        check(abs(pos.get("lat", 0) + 38.30942616) < 1e-6 and abs(pos.get("lon", 0) - 146.39974564) < 1e-6,
+              f"live view base position {pos.get('lat')}, {pos.get('lon')}")
+        types = {m["type"] for m in live["messages"]}
+        check({1077, 1087, 1097, 1117, 1127, 1005} <= types, f"live view message types {sorted(types)}")
+        check(any(s["el"] >= 0 for s in live["sats"]), "live view has sky positions from GSV")
+        check(live["receiver"]["type"] == "TRIMBLE NETR9", f"receiver from 1033: {live['receiver']['type']!r}")
+        check(live["stream"]["rtcm_only"] is True and live["stream"]["garbage"] > 0,
+              f"stream filter on, garbage dropped: {live['stream']}")
+
+        cons = http("/receiver/console?since=0")
+        texts = [l["text"] for l in cons["lines"]]
+        check("$command,VERSION,response: OK*45" in texts and any(t.startswith("#VERSION") for t in texts)
+              and not any(t.startswith("$GPGSV") for t in texts),
+              f"console shows receiver replies but not NMEA ({len(texts)} lines)")
+
+        r = http("/receiver/command", {"cmd": "VERSION"})
+        ok = r.get("ok") and wait_for(lambda: any(l.strip() == "VERSION" for _, l in uart_lines), 10)
+        check(ok, "command from web page reaches the receiver UART as 'VERSION\\r\\n'")
+        r = http("/receiver/command", {"cmd": "FRESET"})
+        check(r.get("ok") is False and not any(l.strip().upper() == "FRESET" for _, l in uart_lines),
+              f"FRESET without confirmation refused: {r}")
+        r = http("/receiver/command", {"cmd": "bad\u0001cmd"})
+        check(r.get("ok") is False, "command with control characters refused")
+        cons = http(f"/receiver/console?since={cons['seq']}")
+        check(any(l["dir"] == ">" and l["text"] == "VERSION" for l in cons["lines"]), "sent command echoed in console")
+
+        for c in (a, b):
+            ck = c.checkers[-1]
+            check(ck.bad == 0 and ck.frames_any > 100 and b"$" not in ck.text_seen,
+                  f"caster {c.name} got only valid RTCM from the recording ({ck.frames_any} frames, bad={ck.bad})")
+
+        heap = http("/status")["heap"]
+        log(f"heap free {heap['free']} of {heap['total']}")
+        check(heap["free"] > 40000, f"enough free heap ({heap['free']} bytes)")
+
         feeding.set()
 
         # Phase 1: both casters connect and stream
@@ -319,7 +429,9 @@ def main():
         for c in (a, b):
             ck = c.checkers[-1]
             check(ck.frames > 150 and ck.bad == 0 and ck.gaps == 0,
-                  f"caster {c.name} streaming clean data ({ck.frames} frames, bad={ck.bad}, gaps={ck.gaps})")
+                  f"caster {c.name} streaming clean data ({ck.frames} frames, bad={ck.bad}, gaps={ck.gaps} {ck.gap_list[:3]})")
+        if os.environ.get("QUICK"):
+            raise SystemExit
 
         # Phase 2: caster-side drop, expect reconnect in ~5 s
         n = len(a.logins)
