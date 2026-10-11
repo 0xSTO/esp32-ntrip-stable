@@ -112,6 +112,7 @@ void app_main()
     ESP_LOGI(TAG, "╟──────────────────────────────────────────────╢");
     ESP_LOGI(TAG, "║ Author: Nebojša Cvetković                    ║");
     ESP_LOGI(TAG, "║ Source: https://github.com/nebkat/esp32-xbee ║");
+    ESP_LOGI(TAG, "║ Fork:   github.com/0xSTO/esp32-ntrip-stable  ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════╝");
 
     esp_event_loop_create_default();

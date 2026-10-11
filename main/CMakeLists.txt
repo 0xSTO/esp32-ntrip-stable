@@ -21,6 +21,7 @@ idf_component_register(SRCS "main.c"
 		"gnss_monitor.c"
 		"line_log.c"
 		"receiver.c"
+		"recorder.c"
 
 		"protocol/nmea.c"
         INCLUDE_DIRS "include"

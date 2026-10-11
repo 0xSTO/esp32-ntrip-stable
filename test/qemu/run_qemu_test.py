@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 
 PORT_A = 21010
@@ -410,6 +411,54 @@ def main():
         check(r.get("ok") is False, "command with control characters refused")
         cons = http(f"/receiver/console?since={cons['seq']}")
         check(any(l["dir"] == ">" and l["text"] == "VERSION" for l in cons["lines"]), "sent command echoed in console")
+
+        # RTCM log download (STRSVR-like): runs while the rest of the web UI keeps working
+        rec = {"data": b"", "headers": None, "done": False}
+
+        def record():
+            with urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/receiver/record?minutes=1", timeout=120) as r:
+                rec["headers"] = dict(r.headers)
+                while True:
+                    chunk = r.read(4096)
+                    if not chunk:
+                        break
+                    rec["data"] += chunk
+            rec["done"] = True
+
+        threading.Thread(target=record, daemon=True).start()
+        t_rec = time.monotonic()
+        feed_paced(open(RECORDED, "rb").read()[:30000])
+        live2 = http("/receiver/live")
+        check(live2["recording"]["active"] and live2["recording"]["bytes"] > 0,
+              f"live view works during a recording: {live2['recording']}")
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/receiver/record?minutes=5", timeout=15)
+            second = "accepted"
+        except urllib.error.HTTPError as e:
+            second = e.code
+        check(second == 409, f"second recording refused while one runs ({second})")
+        http("/receiver/record/stop", {})
+        wait_for(lambda: rec["done"], 20)
+        frames_ok, pos_r, bad_r = 0, 0, 0
+        data = rec["data"]
+        while pos_r + 3 <= len(data):
+            if data[pos_r] != 0xD3:
+                bad_r += 1
+                pos_r += 1
+                continue
+            ln = ((data[pos_r + 1] & 3) << 8) | data[pos_r + 2]
+            fr = data[pos_r:pos_r + ln + 6]
+            if len(fr) < ln + 6 or crc24q(fr[:-3]) != int.from_bytes(fr[-3:], "big"):
+                bad_r += 1
+                pos_r += 1
+                continue
+            frames_ok += 1
+            pos_r += ln + 6
+        cd = (rec["headers"] or {}).get("Content-Disposition", "")
+        check(rec["done"] and frames_ok > 50 and bad_r == 0 and "attachment" in cd and ".rtcm3" in cd,
+              f"recorded file: {len(data)} bytes, {frames_ok} valid RTCM frames, {bad_r} bad bytes, {cd!r}, "
+              f"stopped after {time.monotonic() - t_rec:.0f} s")
+        open(os.path.join(workdir, "recording.rtcm3"), "wb").write(data)
 
         for c in (a, b):
             ck = c.checkers[-1]

@@ -39,6 +39,7 @@
 #include <esp_timer.h>
 #include "web_server.h"
 #include "receiver.h"
+#include "recorder.h"
 
 // Max length a file path can have on storage
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
@@ -800,6 +801,16 @@ static esp_err_t receiver_command_post_handler(httpd_req_t *req) {
     return json_response(req, resp);
 }
 
+static esp_err_t receiver_record_get_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+    return recorder_start_handler(req);
+}
+
+static esp_err_t receiver_record_stop_post_handler(httpd_req_t *req) {
+    if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
+    return recorder_stop_handler(req);
+}
+
 static esp_err_t wifi_scan_get_handler(httpd_req_t *req) {
     if (check_auth(req) == ESP_FAIL) return ESP_FAIL;
 
@@ -863,6 +874,8 @@ static httpd_handle_t web_server_start(void)
         register_uri_handler(server, "/receiver/live", HTTP_GET, receiver_live_get_handler);
         register_uri_handler(server, "/receiver/console", HTTP_GET, receiver_console_get_handler);
         register_uri_handler(server, "/receiver/command", HTTP_POST, receiver_command_post_handler);
+        register_uri_handler(server, "/receiver/record", HTTP_GET, receiver_record_get_handler);
+        register_uri_handler(server, "/receiver/record/stop", HTTP_POST, receiver_record_stop_post_handler);
 
         register_uri_handler(server, "/*", HTTP_GET, file_get_handler);
     }

@@ -207,6 +207,20 @@ def main():
             time.sleep(3)
             t = console_text()
             check("> VERSION" in t and "#VERSION" in t, "manual command and reply appear in the console")
+            # 6. Hidden tab stops polling; visible again resumes immediately
+            polls = []
+            pg.on("request", lambda r: polls.append(time.time()) if "/receiver/" in r.url else None)
+            pg.evaluate("""() => { window.__hidden = true;
+                Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.__hidden });
+                document.dispatchEvent(new Event('visibilitychange')); }""")
+            time.sleep(3)
+            polls.clear()
+            time.sleep(6)
+            hidden_polls = len(polls)
+            pg.evaluate("() => { window.__hidden = false; document.dispatchEvent(new Event('visibilitychange')); }")
+            time.sleep(3)
+            check(hidden_polls == 0 and len(polls) >= 2, f"no polling while hidden ({hidden_polls}), resumes when visible ({len(polls)})")
+
             pg.screenshot(path=os.path.join(work, "ui_after.png"), full_page=True)
             check(not errors, f"no JavaScript errors ({errors[:2]})")
             br.close()
