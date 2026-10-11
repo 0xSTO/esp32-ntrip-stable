@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Receiver - ESP32 NTRIP</title>
+    <script src="jquery-3.4.1.min.js"></script>
+    <script src="bs-4.3.1.bundle.min.js"></script>
+    <link rel="stylesheet" href="bs-4.3.1.min.css">
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+    <style>
+        body { background: #f4f5f7; }
+        .tile { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; padding: 10px 14px; height: 100%; }
+        .tile .lbl { font-size: 12px; color: #6c757d; }
+        .tile .val { font-size: 22px; font-weight: 600; line-height: 1.2; word-break: break-word; }
+        .tile .val.small { font-size: 14px; font-weight: 500; }
+        .card { border-radius: 8px; border-color: #e3e6ea; }
+        .card-header { background: #fff; font-weight: 600; }
+        .band-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 13px; }
+        .band-row .name { width: 120px; }
+        .band-row .name small { color: #6c757d; }
+        .band-row .bar { flex: 1; height: 10px; background: #edf0f2; border-radius: 5px; overflow: hidden; margin: 0 10px; }
+        .band-row .bar div { height: 100%; background: #b5bd00; border-radius: 5px; transition: width .4s; }
+        .band-row .num { width: 80px; text-align: right; color: #495057; }
+        table.cons td, table.cons th { padding: 4px 6px; font-size: 13px; text-align: right; }
+        table.cons td:first-child, table.cons th:first-child { text-align: left; }
+        #sky { width: 100%; max-width: 420px; display: block; margin: 0 auto; }
+        #sky text { font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+        .chip { display: inline-block; background: #eef0f2; border-radius: 4px; padding: 2px 8px; margin: 0 4px 4px 0; font-size: 12px; }
+        .chip.stale { background: #fde8e8; color: #9b1c1c; }
+        #console { background: #111; color: #d7e0e8; font-family: SFMono-Regular, Consolas, Menlo, monospace; font-size: 12px;
+                   height: 280px; overflow-y: auto; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+        #console .out { color: #9fe870; }
+        #console .note { color: #f6c343; }
+        #console .err { color: #ff8080; }
+        .status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #adb5bd; margin-right: 6px; }
+        .status-dot.live { background: #28a745; }
+        .status-dot.stale { background: #dc3545; }
+        .preset-btns .btn { margin: 0 6px 6px 0; }
+        .legend-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, #3d3d4a, #7a2f7a, #e0742c, #f2c230, #b5bd00); }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap">
+        <h3 class="mb-2 mr-3">Receiver</h3>
+        <div class="mb-2">
+            <span id="live-status"><span class="status-dot"></span><span class="text">Connecting&hellip;</span></span>
+            <a href="/" class="btn btn-sm btn-outline-secondary ml-3">&larr; Settings</a>
+        </div>
+    </div>
+
+    <!-- Tiles -->
+    <div class="row">
+        <div class="col-6 col-md-3 mb-3"><div class="tile"><div class="lbl">Satellites</div><div class="val" id="t-sats">&ndash;</div></div></div>
+        <div class="col-6 col-md-3 mb-3"><div class="tile"><div class="lbl">Signals</div><div class="val" id="t-sigs">&ndash;</div></div></div>
+        <div class="col-6 col-md-3 mb-3"><div class="tile"><div class="lbl">Mean C/N0 <small>(dB-Hz)</small></div><div class="val" id="t-cnr">&ndash;</div></div></div>
+        <div class="col-6 col-md-3 mb-3"><div class="tile"><div class="lbl">Corrections from receiver</div><div class="val" id="t-rate">&ndash;</div></div></div>
+    </div>
+
+    <div class="row">
+        <!-- Signal levels + constellations -->
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between">Signal level <small class="text-muted font-weight-normal">mean per band</small></div>
+                <div class="card-body">
+                    <div id="bands"></div>
+                    <div class="d-flex justify-content-between text-muted" style="font-size:11px;margin:-4px 90px 12px 130px"><span>25</span><span>55 dB-Hz</span></div>
+                    <table class="table table-sm cons mb-0">
+                        <thead><tr><th>Constellation</th><th>Satellites</th><th>L1</th><th>L2</th><th>L5</th><th>L6</th></tr></thead>
+                        <tbody id="cons"><tr><td colspan="6" class="text-muted text-center">Waiting for data&hellip;</td></tr></tbody>
+                    </table>
+                    <small class="text-muted">Band columns count signals. L2 includes Galileo E5b and BeiDou B2I; L5 includes E5a/B2a; L6 includes E6/B3/LEX.</small>
+                </div>
+            </div>
+        </div>
+        <!-- Sky view -->
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header">Sky view</div>
+                <div class="card-body">
+                    <svg id="sky" viewBox="-130 -130 260 260"></svg>
+                    <div class="d-flex align-items-center mt-2" style="font-size:11px">
+                        <span class="mr-2 text-muted">C/N0</span><span>20</span>
+                        <div class="legend-bar flex-fill mx-2"></div><span>50 dB-Hz</span>
+                    </div>
+                    <div id="sky-hint" class="alert alert-info mt-3 mb-0 py-2" style="display:none;font-size:13px">
+                        The sky view needs satellite positions (NMEA GSV) from the receiver.
+                        <button class="btn btn-sm btn-info ml-1" data-preset="skyview">Enable sky view</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header">Base station</div>
+                <div class="card-body" style="font-size:14px">
+                    <table class="table table-sm mb-2">
+                        <tr><td class="text-muted">Announced position</td><td id="b-pos">&ndash;</td></tr>
+                        <tr><td class="text-muted">Height (ellipsoidal)</td><td id="b-h">&ndash;</td></tr>
+                        <tr><td class="text-muted">ECEF X / Y / Z</td><td id="b-ecef" style="font-size:12px">&ndash;</td></tr>
+                        <tr><td class="text-muted">Receiver</td><td id="b-rx">&ndash;</td></tr>
+                        <tr><td class="text-muted">Antenna</td><td id="b-ant">&ndash;</td></tr>
+                    </table>
+                    <div class="text-muted mb-1" style="font-size:12px">RTCM messages <span class="font-weight-normal">(interval)</span></div>
+                    <div id="msgs"><span class="text-muted">&ndash;</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Console -->
+        <div class="col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    Receiver console
+                    <span class="font-weight-normal" style="font-size:13px">
+                        Port to ESP32
+                        <select id="port" class="custom-select custom-select-sm d-inline-block" style="width:auto">
+                            <option>COM1</option><option>COM2</option><option>COM3</option>
+                        </select>
+                    </span>
+                </div>
+                <div class="card-body">
+                    <div id="console"></div>
+                    <form id="cmd-form" class="input-group mt-2" autocomplete="off">
+                        <input id="cmd" class="form-control" placeholder="Type a command, e.g. VERSION" maxlength="200">
+                        <div class="input-group-append"><button class="btn btn-primary" type="submit">Send</button></div>
+                    </form>
+                    <div class="preset-btns mt-3">
+                        <button class="btn btn-sm btn-outline-secondary" data-preset="version">Version</button>
+                        <button class="btn btn-sm btn-outline-secondary" data-preset="save">Save config</button>
+                        <button class="btn btn-sm btn-outline-secondary" data-preset="skyview">Enable sky view</button>
+                        <button class="btn btn-sm btn-outline-primary" data-toggle="modal" data-target="#setup-modal">Apply base setup&hellip;</button>
+                        <button class="btn btn-sm btn-outline-danger" data-preset="freset">Factory reset</button>
+                    </div>
+                    <small class="text-muted d-block">Replies from the receiver appear above. NMEA sentences are used for the sky view and not shown here.</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-12 mb-3">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    Record RTCM log
+                    <small class="text-muted font-weight-normal">like RTKLIB STRSVR file output</small>
+                </div>
+                <div class="card-body" style="font-size:14px">
+                    <div class="form-inline mb-2">
+                        <label class="mr-2" for="rec-minutes">Duration</label>
+                        <select id="rec-minutes" class="custom-select custom-select-sm mr-2">
+                            <option value="15">15 minutes</option>
+                            <option value="60">1 hour</option>
+                            <option value="120">2 hours</option>
+                            <option value="360" selected>6 hours (AUSPOS)</option>
+                            <option value="720">12 hours</option>
+                            <option value="1440">24 hours</option>
+                        </select>
+                        <button id="rec-start" class="btn btn-sm btn-primary mr-2">Start recording</button>
+                        <button id="rec-stop" class="btn btn-sm btn-outline-danger" style="display:none">Stop and finish file</button>
+                    </div>
+                    <div id="rec-status" class="mb-2 text-muted">Not recording.</div>
+                    <small class="text-muted d-block">
+                        Your browser downloads a <code>.rtcm3</code> file that keeps growing until the time is up or you press
+                        <i>Stop and finish file</i>. Keep this computer awake and on the same WiFi until then &mdash; if the connection
+                        drops the browser may discard the unfinished download. The file contains exactly what the casters receive.
+                        For precise coordinates convert it to RINEX with RTKLIB <b>RTKCONV</b> and submit to
+                        <a href="https://gnss.ga.gov.au/auspos" target="_blank" rel="noopener">AUSPOS</a> (2 h minimum, 6 h or more is better).
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="text-center text-muted py-3" style="font-size:12px">
+        <a href="https://github.com/0xSTO/esp32-ntrip-stable" target="_blank" rel="noopener">esp32-ntrip-stable</a>
+        &middot; based on <a href="https://github.com/incarvr6/esp32-ntrip-DUO" target="_blank" rel="noopener">esp32-ntrip-DUO</a>
+        and <a href="https://github.com/nebkat/esp32-xbee" target="_blank" rel="noopener">ESP32-XBee</a> (GPLv3)
+    </footer>
+</div>
+
+<!-- Base setup dialog -->
+<div class="modal fade" id="setup-modal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">Apply base setup (UM980)</h5>
+                <button type="button" class="close" data-dismiss="modal">&times;</button></div>
+            <div class="modal-body" style="font-size:14px">
+                <div class="form-group">
+                    <label class="font-weight-bold mb-1">Base position</label>
+                    <div class="custom-control custom-radio"><input type="radio" id="m-fixed" name="mode" value="fixed" class="custom-control-input" checked>
+                        <label class="custom-control-label" for="m-fixed">Fixed coordinates <small class="text-muted">(recommended: same position after every power cut)</small></label></div>
+                    <div id="fixed-fields" class="form-row mt-2 mb-2">
+                        <div class="col-4"><input id="f-lat" class="form-control form-control-sm" placeholder="Latitude" inputmode="decimal"></div>
+                        <div class="col-4"><input id="f-lon" class="form-control form-control-sm" placeholder="Longitude" inputmode="decimal"></div>
+                        <div class="col-4"><input id="f-h" class="form-control form-control-sm" placeholder="Height (m)" inputmode="decimal"></div>
+                        <small class="col-12 text-muted">Decimal degrees (south is negative), ellipsoidal height in metres &mdash; e.g. from AUSPOS.
+                            <a href="#" id="use-current">Use the current announced position</a></small>
+                        <small id="coord-error" class="col-12 text-danger" style="display:none">Enter plain decimal numbers, e.g. -38.30942616 146.39974564 96.447</small>
+                    </div>
+                    <div class="custom-control custom-radio"><input type="radio" id="m-survey60" name="mode" value="survey60" class="custom-control-input">
+                        <label class="custom-control-label" for="m-survey60">Survey-in, 60 seconds <small class="text-muted">(about 1&ndash;2 m; repeats after every power cut)</small></label></div>
+                </div>
+                <div class="custom-control custom-checkbox mb-2"><input type="checkbox" id="o-signals" class="custom-control-input">
+                    <label class="custom-control-label" for="o-signals">All frequency bands (CONFIG SIGNALGROUP 2) <small class="text-muted">&mdash; only needed after a factory reset; the receiver restarts</small></label></div>
+                <div class="custom-control custom-checkbox mb-2"><input type="checkbox" id="o-sky" class="custom-control-input" checked>
+                    <label class="custom-control-label" for="o-sky">Sky view data (NMEA GSV every 5 s)</label></div>
+                <p class="text-muted mb-2" style="font-size:12px">Each command must be answered with OK by the receiver. If one fails or gets no answer,
+                    the sequence stops <b>before</b> saving, so the receiver's saved settings are untouched (power-cycle it to go back to them).</p>
+                <div class="text-muted mb-1" style="font-size:12px">Commands that will be sent:</div>
+                <pre id="setup-preview" class="bg-light p-2 mb-0" style="font-size:12px;max-height:180px;overflow:auto"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="setup-apply">Apply</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ------------------------------------------------------------------ helpers
+    var store = {
+        get: function (k, d) { try { var v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+        set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    };
+    var SYS_NAMES = { G: 'GPS', R: 'GLONASS', E: 'Galileo', J: 'QZSS', C: 'BeiDou', I: 'NavIC', S: 'SBAS' };
+    var BAND_NAMES = [['L1', 'E1 · B1'], ['L2', 'E5b · B2'], ['L5', 'E5a · B2a'], ['L6', 'E6 · B3']];
+
+    function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+    function cnrColor(c) {
+        // 20 dB-Hz dark grey -> purple -> orange -> yellow -> olive green at 50
+        var stops = [[20, [61, 61, 74]], [30, [122, 47, 122]], [37, [224, 116, 44]], [42, [242, 194, 48]], [47, [181, 189, 0]]];
+        if (c <= stops[0][0]) return 'rgb(61,61,74)';
+        for (var i = 1; i < stops.length; i++) {
+            if (c <= stops[i][0]) {
+                var a = stops[i - 1], b = stops[i], t = (c - a[0]) / (b[0] - a[0]);
+                var rgb = a[1].map(function (v, k) { return Math.round(v + (b[1][k] - v) * t); });
+                return 'rgb(' + rgb.join(',') + ')';
+            }
+        }
+        return 'rgb(181,189,0)';
+    }
+
+    function fmtInterval(ms) {
+        if (!ms) return '';
+        var s = ms / 1000;
+        return s < 1.5 ? Math.round(s * 10) / 10 + ' s' : Math.round(s) + ' s';
+    }
+
+    // ------------------------------------------------------------------ sky view
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    function el(name, attrs, text) {
+        var e = document.createElementNS(SVGNS, name);
+        for (var k in attrs) e.setAttribute(k, attrs[k]);
+        if (text !== undefined) e.textContent = text;
+        return e;
+    }
+    var sky = document.getElementById('sky');
+    function drawSkyGrid() {
+        var g = el('g', { id: 'grid' });
+        [100, 66.7, 33.3].forEach(function (r) { g.appendChild(el('circle', { cx: 0, cy: 0, r: r, fill: 'none', stroke: '#dee2e6' })); });
+        for (var a = 0; a < 360; a += 30) {
+            var rad = (a - 90) * Math.PI / 180;
+            g.appendChild(el('line', { x1: 0, y1: 0, x2: 100 * Math.cos(rad), y2: 100 * Math.sin(rad), stroke: '#eceff1' }));
+            var lbl = { 0: 'N', 90: 'E', 180: 'S', 270: 'W' }[a] || String(a);
+            g.appendChild(el('text', { x: 114 * Math.cos(rad), y: 114 * Math.sin(rad) + 3.5, 'text-anchor': 'middle',
+                'font-size': a % 90 === 0 ? 11 : 8, fill: '#6c757d', 'font-weight': a % 90 === 0 ? 600 : 400 }, lbl));
+        }
+        [30, 60].forEach(function (e) { g.appendChild(el('text', { x: 2, y: -(90 - e) / 90 * 100 - 2, 'font-size': 7, fill: '#adb5bd' }, e + '°')); });
+        sky.appendChild(g);
+        sky.appendChild(el('g', { id: 'sats' }));
+    }
+    drawSkyGrid();
+
+    function drawSky(sats) {
+        var g = document.getElementById('sats');
+        while (g.firstChild) g.removeChild(g.firstChild);
+        var plotted = 0;
+        sats.forEach(function (s) {
+            if (s.el < 0 || s.az < 0) return;
+            var r = (90 - Math.min(90, s.el)) / 90 * 100, rad = (s.az - 90) * Math.PI / 180;
+            var x = r * Math.cos(rad), y = r * Math.sin(rad);
+            var grp = el('g', {});
+            var fill = s.t ? cnrColor(s.cnr) : '#ffffff';
+            grp.appendChild(el('circle', { cx: x, cy: y, r: 8.5, fill: fill, stroke: s.t ? '#2b2b2b' : '#adb5bd', 'stroke-width': 0.8 }));
+            grp.appendChild(el('text', { x: x, y: y + 2.6, 'text-anchor': 'middle', 'font-size': 6.6, 'font-weight': 600,
+                fill: s.t ? (s.cnr < 33 ? '#fff' : '#1b1b1b') : '#868e96' }, s.id));
+            grp.appendChild(el('title', {}, s.id + ' — el ' + s.el + '°, az ' + s.az + '°' + (s.t ? ', ' + s.cnr.toFixed(1) + ' dB-Hz' : ', in view (not tracked)')));
+            g.appendChild(grp);
+            plotted++;
+        });
+        $('#sky-hint').toggle(plotted === 0 && lastLive !== null);
+    }
+
+    // ------------------------------------------------------------------ polling
+    // Don't poll while the tab is hidden (a forgotten tab then costs the ESP32
+    // nothing); resume immediately when it becomes visible. A running setup
+    // sequence keeps polling because it waits for the receiver's replies.
+    function schedule(fn, ms) {
+        setTimeout(function () {
+            if (!document.hidden || running) { fn(); return; }
+            var resume = function () {
+                if (document.hidden && !running) return;
+                document.removeEventListener('visibilitychange', resume);
+                fn();
+            };
+            document.addEventListener('visibilitychange', resume);
+        }, ms);
+    }
+
+    // ------------------------------------------------------------------ live view
+    var lastLive = null;
+    function renderLive(d) {
+        lastLive = d;
+        $('#t-sats').text(d.satellites);
+        $('#t-sigs').text(d.signals);
+        $('#t-cnr').text(d.signals ? d.mean_cnr.toFixed(1) : '–');
+        var msgsPerSec = 0;
+        d.messages.forEach(function (m) { if (m.interval_ms && m.age_ms < 10000) msgsPerSec += 1000 / m.interval_ms; });
+        $('#t-rate').html(d.live ? (msgsPerSec ? msgsPerSec.toFixed(1) + ' <small>msg/s</small>' : 'live') : '<span class="text-danger">none</span>');
+
+        var st = $('#live-status');
+        st.find('.status-dot').toggleClass('live', d.live).toggleClass('stale', !d.live);
+        st.find('.text').text(d.live ? 'Live — RTCM flowing' : (d.counters.rtcm_frames ? 'No RTCM for ' + Math.round(d.rtcm_age_ms / 1000) + ' s' : 'No RTCM received yet'));
+
+        // Bands
+        var bands = $('#bands').empty();
+        d.bands.forEach(function (b, i) {
+            var pct = b.signals ? Math.max(0, Math.min(100, (b.mean_cnr - 25) / 30 * 100)) : 0;
+            bands.append('<div class="band-row"><div class="name">' + BAND_NAMES[i][0] + ' <small>' + BAND_NAMES[i][1] + '</small></div>' +
+                '<div class="bar"><div style="width:' + pct + '%"></div></div><div class="num">' +
+                (b.signals ? b.mean_cnr.toFixed(1) + ' dB-Hz' : '–') + '</div></div>');
+        });
+
+        // Constellations
+        var cons = $('#cons').empty();
+        if (!d.systems.length) cons.append('<tr><td colspan="6" class="text-muted text-center">No satellites tracked</td></tr>');
+        d.systems.forEach(function (s) {
+            cons.append('<tr><td>' + esc(SYS_NAMES[s.sys] || s.sys) + ' (' + s.sys + ')</td><td>' + s.sats + '</td>' +
+                s.sigs.map(function (n) { return '<td>' + (n || '–') + '</td>'; }).join('') + '</tr>');
+        });
+
+        drawSky(d.sats);
+
+        // Base station
+        if (d.position) {
+            var p = d.position;
+            $('#b-pos').text(p.lat.toFixed(8) + '°, ' + p.lon.toFixed(8) + '°');
+            $('#b-h').text(p.height.toFixed(3) + ' m' + (p.antenna_height ? ' (antenna ' + p.antenna_height.toFixed(3) + ' m)' : ''));
+            $('#b-ecef').text(p.x.toFixed(4) + ' / ' + p.y.toFixed(4) + ' / ' + p.z.toFixed(4));
+        }
+        var rx = d.receiver;
+        $('#b-rx').text([rx.type, rx.firmware].filter(Boolean).join(' · ') || '–');
+        $('#b-ant').text([rx.antenna, rx.antenna_serial].filter(Boolean).join(' · ') || '–');
+
+        var msgs = $('#msgs').empty();
+        d.messages.slice().sort(function (a, b) { return a.type - b.type; }).forEach(function (m) {
+            var stale = m.age_ms > Math.max(15000, 3 * (m.interval_ms || 0));
+            msgs.append('<span class="chip' + (stale ? ' stale' : '') + '" title="' + m.count + ' received">' + m.type +
+                (m.interval_ms ? ' (' + fmtInterval(m.interval_ms) + ')' : '') + '</span>');
+        });
+        if (!d.messages.length) msgs.append('<span class="text-muted">none yet</span>');
+
+        renderRecording(d.recording);
+    }
+
+    // ------------------------------------------------------------------ recording
+    function fmtBytes(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024).toFixed(0) + ' kB'; }
+    function fmtDur(s) {
+        var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+        return h + ':' + (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+    function renderRecording(r) {
+        if (!r) return;
+        $('#rec-start, #rec-minutes').prop('disabled', r.active);
+        $('#rec-stop').toggle(r.active);
+        var st = $('#rec-status');
+        if (r.active) {
+            st.removeClass('text-muted').html('<span class="status-dot live"></span>Recording <b></b> &mdash; ' +
+                fmtBytes(r.bytes) + ', ' + fmtDur(r.elapsed_s) + ' of ' + fmtDur(r.duration_s) +
+                (r.dropped ? ', <span class="text-danger">' + fmtBytes(r.dropped) + ' dropped (download too slow)</span>' : ''));
+            st.find('b').text(r.file);
+        } else if (r.result) {
+            st.addClass('text-muted').text('Last recording ' + r.result + ': ' + r.file + ', ' + fmtBytes(r.bytes) +
+                (r.dropped ? ', ' + fmtBytes(r.dropped) + ' dropped' : '') + '.');
+        } else {
+            st.addClass('text-muted').text('Not recording.');
+        }
+    }
+    $('#rec-start').on('click', function () {
+        var a = document.createElement('a');
+        a.href = 'receiver/record?minutes=' + encodeURIComponent($('#rec-minutes').val());
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        $(this).prop('disabled', true);
+        $('#rec-status').removeClass('text-muted').text('Starting… your browser should show the download.');
+    });
+    $('#rec-stop').on('click', function () {
+        $.ajax({ url: 'receiver/record/stop', method: 'POST', dataType: 'json', timeout: 8000 })
+            .done(function () { $('#rec-status').text('Finishing the file…'); });
+    });
+
+    function pollLive() {
+        $.ajax({ url: 'receiver/live', dataType: 'json', timeout: 8000 })
+            .done(renderLive)
+            .fail(function () {
+                var st = $('#live-status');
+                st.find('.status-dot').removeClass('live').addClass('stale');
+                st.find('.text').text('Device not responding');
+            })
+            .always(function () { schedule(pollLive, 1000); });
+    }
+
+    // ------------------------------------------------------------------ console
+    var consoleSeq = 0;
+    var rxLines = [];          // recent receiver lines {seq, text}
+    var waiters = [];          // pending reply waits
+    var con = document.getElementById('console');
+    function conAppend(text, cls) {
+        var atBottom = con.scrollTop + con.clientHeight >= con.scrollHeight - 20;
+        var line = document.createElement('div');
+        if (cls) line.className = cls;
+        line.textContent = text;
+        con.appendChild(line);
+        while (con.childNodes.length > 400) con.removeChild(con.firstChild);
+        if (atBottom) con.scrollTop = con.scrollHeight;
+    }
+    function pollConsole() {
+        $.ajax({ url: 'receiver/console', data: { since: consoleSeq }, dataType: 'json', timeout: 8000 })
+            .done(function (d) {
+                if (d.seq < consoleSeq) consoleSeq = 0; // device restarted
+                d.lines.forEach(function (l) {
+                    if (l.seq <= consoleSeq) return;
+                    consoleSeq = l.seq;
+                    if (l.dir === '>') conAppend('> ' + l.text, 'out');
+                    else if (l.dir === '!') conAppend(l.text, 'note');
+                    else {
+                        conAppend(l.text, /FAIL|ERROR/i.test(l.text) ? 'err' : '');
+                        rxLines.push({ seq: l.seq, text: l.text });
+                        if (rxLines.length > 200) rxLines.shift();
+                        checkWaiters();
+                    }
+                });
+            })
+            .always(function () { schedule(pollConsole, running ? 300 : 1000); });
+    }
+
+    // UM980 replies "$command,<what was sent>,response: OK*xx" (or an error text).
+    function normCmd(c) { return c.trim().replace(/\s+/g, ' ').toUpperCase(); }
+    function parseReply(text) {
+        var m = /^\$command,(.*),response:\s*([^*]*)/i.exec(text);
+        return m ? { cmd: normCmd(m[1]), ok: /^OK/i.test(m[2].trim()), text: m[2].trim() } : null;
+    }
+    function checkWaiters() {
+        waiters = waiters.filter(function (w) {
+            for (var i = 0; i < rxLines.length; i++) {
+                var l = rxLines[i];
+                if (l.seq <= w.since) continue;
+                if (w.match(l.text)) { clearTimeout(w.timer); w.resolve(l.text); return false; }
+            }
+            return true;
+        });
+    }
+    function waitFor(match, since, ms) {
+        var d = $.Deferred();
+        var w = { match: match, since: since, resolve: d.resolve };
+        w.timer = setTimeout(function () { waiters = waiters.filter(function (x) { return x !== w; }); d.reject('timeout'); }, ms);
+        waiters.push(w);
+        checkWaiters();
+        return d.promise();
+    }
+
+    function sendCommand(cmd, confirm) {
+        return $.ajax({ url: 'receiver/command', method: 'POST', contentType: 'application/json',
+                        data: JSON.stringify({ cmd: cmd, confirm: !!confirm }), dataType: 'json', timeout: 8000 })
+            .then(function (r) {
+                if (!r.ok) { conAppend('Not sent: ' + r.error, 'err'); return $.Deferred().reject(r.error); }
+                return r;
+            }, function () { conAppend('Not sent: device not responding', 'err'); return $.Deferred().reject('device not responding'); });
+    }
+
+    // Send a command and wait for the receiver's OK. Resolves on OK, rejects with a reason.
+    function sendAndConfirm(cmd, ms) {
+        var since = consoleSeq, want = normCmd(cmd);
+        return sendCommand(cmd).then(function () {
+            return waitFor(function (t) { var r = parseReply(t); return r && r.cmd === want; }, since, ms || 4000)
+                .then(function (t) {
+                    var r = parseReply(t);
+                    return r.ok ? r : $.Deferred().reject(r.text || 'error');
+                }, function () { return $.Deferred().reject('no answer from the receiver'); });
+        });
+    }
+
+    // Wait until the receiver answers VERSION again (after a restart).
+    function waitForReceiver(totalMs) {
+        var deadline = Date.now() + totalMs, d = $.Deferred();
+        function attempt() {
+            if (Date.now() > deadline) { d.reject('receiver did not come back after restarting'); return; }
+            var since = consoleSeq;
+            sendCommand('VERSION').then(function () {
+                return waitFor(function (t) { return /^#VERSION/i.test(t) || (parseReply(t) || {}).cmd === 'VERSION'; }, since, 3000);
+            }).then(function () { d.resolve(); }, function () { setTimeout(attempt, 2000); });
+        }
+        setTimeout(attempt, 4000);
+        return d.promise();
+    }
+
+    // Steps: {cmd, optional, alt:[...], restart:bool}. Stops before later steps if a required one fails.
+    var running = false;
+    function runSequence(title, steps, onDone) {
+        if (running) return;
+        running = true;
+        $('[data-preset], #setup-apply, #cmd-form button').prop('disabled', true);
+        conAppend('— ' + title + ' —', 'note');
+        var i = 0;
+        function tryCmd(list, k) {
+            return sendAndConfirm(list[k]).then(null, function (why) {
+                if (k + 1 < list.length) {
+                    conAppend('"' + list[k] + '" failed (' + why + '), trying "' + list[k + 1] + '"', 'note');
+                    return tryCmd(list, k + 1);
+                }
+                return $.Deferred().reject(why);
+            });
+        }
+        function next() {
+            if (i >= steps.length) { finish('— done: all commands confirmed by the receiver —'); if (onDone) onDone(); return; }
+            var st = steps[i++];
+            tryCmd([st.cmd].concat(st.alt || []), 0).then(function () {
+                if (st.restart) {
+                    conAppend('(receiver is restarting, waiting for it to answer again)', 'note');
+                    return waitForReceiver(60000);
+                }
+            }).then(function () { setTimeout(next, 300); }, function (why) {
+                if (st.optional) {
+                    conAppend('Skipped optional "' + st.cmd + '": ' + why, 'note');
+                    setTimeout(next, 300);
+                } else {
+                    finish('— stopped at "' + st.cmd + '": ' + why + '. Nothing was saved. —', true);
+                }
+            });
+        }
+        function finish(msg, bad) {
+            conAppend(msg, bad ? 'err' : 'note');
+            running = false;
+            $('[data-preset], #setup-apply, #cmd-form button').prop('disabled', false);
+        }
+        next();
+    }
+
+    function port() { return $('#port').val(); }
+
+    var NUM = /^-?\d{1,3}(\.\d+)?$/, HNUM = /^-?\d{1,4}(\.\d+)?$/;
+    function coords() {
+        var lat = $('#f-lat').val().trim(), lon = $('#f-lon').val().trim(), h = $('#f-h').val().trim();
+        if (!NUM.test(lat) || !NUM.test(lon) || !HNUM.test(h)) return null;
+        var la = parseFloat(lat), lo = parseFloat(lon), hh = parseFloat(h);
+        if (Math.abs(la) > 90 || Math.abs(lo) > 180 || hh < -500 || hh > 9000) return null;
+        return { lat: la.toFixed(9).replace(/0+$/, '').replace(/\.$/, ''), lon: lo.toFixed(9).replace(/0+$/, '').replace(/\.$/, ''),
+                 h: hh.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') };
+    }
+
+    function setupSteps() {
+        var p = port(), steps = [];
+        var mode = $('input[name=mode]:checked').val();
+        if ($('#o-signals').prop('checked')) steps.push({ cmd: 'CONFIG SIGNALGROUP 2', restart: true });
+        if (mode === 'fixed') {
+            var c = coords();
+            steps.push({ cmd: 'MODE BASE ' + (c ? c.lat + ' ' + c.lon + ' ' + c.h : '<lat> <lon> <height>') });
+        } else {
+            steps.push({ cmd: 'MODE BASE TIME 60 2 2.5' });
+        }
+        steps.push({ cmd: 'UNLOG ' + p });
+        steps.push({ cmd: 'RTCM1005 ' + p + ' 10' });
+        steps.push({ cmd: 'RTCM1033 ' + p + ' 30' });
+        ['1077', '1087', '1097', '1117', '1127'].forEach(function (m) { steps.push({ cmd: 'RTCM' + m + ' ' + p + ' 1' }); });
+        if ($('#o-sky').prop('checked')) steps.push({ cmd: 'GNGSV ' + p + ' 5', alt: ['GPGSV ' + p + ' 5'], optional: true });
+        steps.push({ cmd: 'SAVECONFIG' });
+        return steps;
+    }
+    function updatePreview() {
+        var fixed = $('#m-fixed').prop('checked');
+        $('#fixed-fields').toggle(fixed);
+        $('#coord-error').toggle(fixed && coords() === null && ($('#f-lat').val() + $('#f-lon').val() + $('#f-h').val()).length > 0);
+        $('#setup-preview').text(setupSteps().map(function (s) {
+            return s.cmd + (s.restart ? '   (then wait for the receiver to restart)' : '') + (s.alt ? '   (or ' + s.alt.join(', ') + ')' : '') + (s.optional ? '   [optional]' : '');
+        }).join('\n'));
+    }
+    function fillCurrent() {
+        if (!lastLive || !lastLive.position) return false;
+        $('#f-lat').val(lastLive.position.lat.toFixed(8));
+        $('#f-lon').val(lastLive.position.lon.toFixed(8));
+        $('#f-h').val(lastLive.position.height.toFixed(3));
+        return true;
+    }
+    $('#use-current').on('click', function (e) { e.preventDefault(); if (!fillCurrent()) alert('No position received from the receiver yet.'); updatePreview(); });
+    $('#setup-modal').on('show.bs.modal', function () {
+        if (!$('#f-lat').val() && !fillCurrent()) $('#m-survey60').prop('checked', true);
+        updatePreview();
+    });
+    $('#setup-modal input, #port').on('change input', updatePreview);
+    $('#setup-apply').on('click', function () {
+        var fixed = $('#m-fixed').prop('checked'), c = coords();
+        if (fixed && c === null) { $('#coord-error').show(); return; }
+        $('#setup-modal').modal('hide');
+        runSequence('Applying base setup on ' + port(), setupSteps(), function () {
+            if (fixed) conAppend('Check the Base station card: the announced position should match ' + c.lat + ', ' + c.lon + ', ' + c.h + ' m within a minute.', 'note');
+        });
+    });
+
+    $(document).on('click', '[data-preset]', function () {
+        var p = $(this).data('preset');
+        if (p === 'version') runSequence('Version', [{ cmd: 'VERSION' }]);
+        else if (p === 'save') runSequence('Save config', [{ cmd: 'SAVECONFIG' }]);
+        else if (p === 'skyview') runSequence('Enable sky view', [{ cmd: 'GNGSV ' + port() + ' 5', alt: ['GPGSV ' + port() + ' 5'] }, { cmd: 'SAVECONFIG' }]);
+        else if (p === 'freset') {
+            if (!confirm('Factory reset wipes ALL receiver settings (base mode, RTCM output, signal groups) and sets its ports back to 115200 baud.\n\nCorrections stop until you apply the base setup again. Continue?')) return;
+            if (running) return;
+            conAppend('— Factory reset —', 'note');
+            sendCommand('FRESET', true).then(function () { conAppend('Receiver is resetting. Afterwards use "Apply base setup" with "All frequency bands" ticked.', 'note'); });
+        }
+    });
+
+    $('#cmd-form').on('submit', function (e) {
+        e.preventDefault();
+        var cmd = $('#cmd').val().trim();
+        if (!cmd || running) return;
+        var isReset = /^\s*freset/i.test(cmd);
+        if (isReset && !confirm('FRESET wipes all receiver settings. Send it?')) return;
+        sendCommand(cmd, isReset).then(function () { $('#cmd').val(''); });
+    });
+
+    $('#port').val(store.get('rx_port', 'COM1')).on('change', function () { store.set('rx_port', $(this).val()); });
+
+    pollLive();
+    pollConsole();
+})();
+</script>
+</body>
+</html>
