@@ -232,6 +232,28 @@ static void test_monitor_position_and_slots(void) {
     CHECK(found30 && found31);
 }
 
+static void test_json_worst_case(void) {
+    static gnss_monitor_t m;
+    static char out[16384];
+    gnss_monitor_init(&m);
+    const char sys[] = "GREJC";
+    for (int i = 0; i < GNSS_MAX_SATS; i++) {
+        gnss_sat_t *s = &m.sats[i];
+        s->sys = sys[i % 5]; s->prn = (uint8_t) (10 + i % 54);
+        s->msm_ms = s->gsv_ms = s->seen_ms = 1000; s->elev = -1 + 90; s->azim = 359;
+        for (int b = 0; b < GNSS_BANDS; b++) { s->sig_count[b] = 9; s->cnr_sum[b] = 9 * 16 * 55; }
+        s->cnr_max16 = 16 * 55;
+    }
+    for (int i = 0; i < GNSS_MAX_MSG_TYPES; i++) { m.msgs[i].type = (uint16_t) (1000 + i); m.msgs[i].count = 4000000000u;
+        m.msgs[i].interval_ms = 30000; m.msgs[i].last_ms = 1000; }
+    m.have_position = true; m.ecef[0] = -4173994.6057; m.ecef[1] = 2773222.0951; m.ecef[2] = -3932511.6382;
+    memset(m.receiver, 'X', 31); memset(m.firmware, 'X', 31); memset(m.receiver_serial, 'X', 31);
+    memset(m.antenna, 'X', 31); memset(m.antenna_serial, 'X', 31);
+    int n = gnss_monitor_json(&m, 2000, out, sizeof(out));
+    printf("worst-case live JSON: %d bytes (firmware buffer 10240, ~400 reserved for extras)\n", n);
+    CHECK(n > 0 && n < 10240 - 450);
+}
+
 static void test_line_log(void) {
     static line_log_t log;
     static char out[32768];
@@ -367,6 +389,7 @@ int main(int argc, char **argv) {
     test_framer_flush();
     test_monitor_position_and_slots();
     test_line_log();
+    test_json_worst_case();
     test_geodesy();
     test_monitor_robustness();
     if (failures) {

@@ -739,7 +739,7 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
 
 // --- GNSS receiver: live view, console, commands -----------------------------
 
-#define RECEIVER_JSON_SIZE 16384
+#define RECEIVER_JSON_SIZE 10240  // 96 satellites worst case ~8.7 KB
 // The HTTP server runs one handler at a time, so one static buffer is enough
 // and avoids allocating 16 KB on every poll (heap fragmentation).
 static char receiver_json[RECEIVER_JSON_SIZE];

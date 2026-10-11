@@ -8,6 +8,8 @@
 #define TASK_PRIORITY_INTERFACE 5
 #define TASK_PRIORITY_HEALTH 12
 #define TASK_PRIORITY_UART 10
-#define TASK_PRIORITY_MAX 100
+// Must stay below configMAX_PRIORITIES (25). It was 100, which made
+// config_restart() hit a FreeRTOS assert (PANIC reboot) on every settings save.
+#define TASK_PRIORITY_MAX 20
 
 #endif //ESP32_XBEE_TASKS_H

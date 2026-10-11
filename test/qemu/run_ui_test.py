@@ -207,7 +207,34 @@ def main():
             time.sleep(3)
             t = console_text()
             check("> VERSION" in t and "#VERSION" in t, "manual command and reply appear in the console")
-            # 6. Hidden tab stops polling; visible again resumes immediately
+            # 6. Recording through a real browser download: start, see it grow, stop, file complete and valid
+            pg.select_option("#rec-minutes", "15")
+            with pg.expect_download(timeout=60000) as dl_info:
+                pg.click("#rec-start")
+            dl = dl_info.value
+            pg.wait_for_function("document.querySelector('#rec-status').textContent.includes('Recording base_')", timeout=30000)
+            time.sleep(12)
+            st_mid = pg.inner_text("#rec-status")
+            pg.click("#rec-stop")
+            path = dl.path()   # waits for the download to finish
+            data = open(path, "rb").read() if path else b""
+            nfr, pos, bad = 0, 0, 0
+            while pos + 3 <= len(data):
+                ln = ((data[pos + 1] & 3) << 8) | data[pos + 2]
+                fr = data[pos:pos + ln + 6]
+                if data[pos] == 0xD3 and len(fr) == ln + 6 and T.crc24q(fr[:-3]) == int.from_bytes(fr[-3:], "big"):
+                    nfr += 1
+                    pos += ln + 6
+                else:
+                    bad += 1
+                    pos += 1
+            time.sleep(2)
+            st_end = pg.inner_text("#rec-status")
+            print("  recording:", st_mid, "|", st_end, "|", dl.suggested_filename, len(data), "bytes")
+            check(dl.failure() is None and nfr > 20 and bad == 0 and dl.suggested_filename.endswith(".rtcm3")
+                  and "stopped" in st_end, f"browser recording completes: {nfr} valid frames, {bad} bad bytes")
+
+            # 7. Hidden tab stops polling; visible again resumes immediately
             polls = []
             pg.on("request", lambda r: polls.append(time.time()) if "/receiver/" in r.url else None)
             pg.evaluate("""() => { window.__hidden = true;

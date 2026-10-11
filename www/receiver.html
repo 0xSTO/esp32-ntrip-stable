@@ -179,6 +179,7 @@
         <a href="https://github.com/0xSTO/esp32-ntrip-stable" target="_blank" rel="noopener">esp32-ntrip-stable</a>
         &middot; based on <a href="https://github.com/incarvr6/esp32-ntrip-DUO" target="_blank" rel="noopener">esp32-ntrip-DUO</a>
         and <a href="https://github.com/nebkat/esp32-xbee" target="_blank" rel="noopener">ESP32-XBee</a> (GPLv3)
+        <div id="heap-info" class="mt-1"></div>
     </footer>
 </div>
 
@@ -370,6 +371,8 @@
         if (!d.messages.length) msgs.append('<span class="text-muted">none yet</span>');
 
         renderRecording(d.recording);
+        if (d.heap) $('#heap-info').text('Device memory: ' + Math.round(d.heap.free / 1024) + ' kB free (lowest ' +
+            Math.round(d.heap.min / 1024) + ' kB, largest block ' + Math.round(d.heap.largest / 1024) + ' kB)');
     }
 
     // ------------------------------------------------------------------ recording
@@ -378,6 +381,7 @@
         var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
         return h + ':' + (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
     }
+    var recStarting = 0;
     function renderRecording(r) {
         if (!r) return;
         $('#rec-start, #rec-minutes').prop('disabled', r.active);
@@ -388,12 +392,19 @@
                 fmtBytes(r.bytes) + ', ' + fmtDur(r.elapsed_s) + ' of ' + fmtDur(r.duration_s) +
                 (r.dropped ? ', <span class="text-danger">' + fmtBytes(r.dropped) + ' dropped (download too slow)</span>' : ''));
             st.find('b').text(r.file);
+        } else if (r.result && /^could not/.test(r.result)) {
+            st.removeClass('text-muted').html('<span class="text-danger"></span>').find('span').text('Recording ' + r.result + '.');
         } else if (r.result) {
             st.addClass('text-muted').text('Last recording ' + r.result + ': ' + r.file + ', ' + fmtBytes(r.bytes) +
                 (r.dropped ? ', ' + fmtBytes(r.dropped) + ' dropped' : '') + '.');
+        } else if (recStarting && Date.now() - recStarting < 8000) {
+            return; // give the download a moment to start
+        } else if (recStarting) {
+            st.removeClass('text-muted').html('<span class="text-danger">The recording did not start. Check your browser\'s downloads for an error, then try again.</span>');
         } else {
             st.addClass('text-muted').text('Not recording.');
         }
+        if (r.active || r.result) recStarting = 0;
     }
     $('#rec-start').on('click', function () {
         var a = document.createElement('a');
@@ -403,6 +414,7 @@
         a.click();
         a.remove();
         $(this).prop('disabled', true);
+        recStarting = Date.now();
         $('#rec-status').removeClass('text-muted').text('Starting… your browser should show the download.');
     });
     $('#rec-stop').on('click', function () {

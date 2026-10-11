@@ -36,7 +36,7 @@ Like RTKLIB STRSVR's file output: choose a duration (15 min to 24 h) and press *
 downloads `base_<UTC date>_<time>Z.rtcm3`, which the ESP32 keeps streaming into until the time is up or you press
 **Stop and finish file**. The file holds exactly the RTCM the casters receive (from the moment you start).
 The recording runs in its own task, so the rest of the web interface and both casters keep working.
-One recording at a time; a 32 KB buffer rides out short WiFi hiccups (anything lost is shown as "dropped").
+One recording at a time; a 12 KB buffer (about 6 s of data) rides out short WiFi hiccups (anything lost is shown as "dropped").
 Keep the computer awake and on the WiFi until it finishes. Convert with RTKLIB RTKCONV to RINEX, e.g. for AUSPOS.
 
 ## Casters get RTCM only
@@ -70,6 +70,18 @@ memcpy (microseconds), so the UART side never has to give up; "dropped" now only
 (the 16 KB buffer full).
 
 The Receiver page also stops polling while its browser tab is hidden.
+
+## v4: real-board fixes (crash on Save, memory)
+
+- **Crash when saving settings (inherited from upstream).** `config_restart()` created its restart task with
+  priority 100, above FreeRTOS's limit of 25, so ESP-IDF 5 hit an assert and the board rebooted with
+  "Reset reason: PANIC" (and wrote a core dump) every time **Submit** was pressed. Now priority 20.
+- **Memory.** On the real board free heap was much tighter than in QEMU (WiFi buffers): recording failed with
+  "Not enough memory to record" and a caster stalled right after the page loaded. Static use was cut: satellite
+  table 160 → 96, console 48 → 32 lines, live-JSON buffer 16 → 10 KB (worst case 8.4 KB, host-tested), no
+  snapshot copy. The recording buffer (12 KB) is reserved at boot instead of a 32 KB malloc on demand.
+- The Receiver page shows device memory (free / lowest / largest block) in its footer, and says clearly when
+  a recording fails to start.
 
 ## Tests
 

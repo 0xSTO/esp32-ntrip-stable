@@ -12,6 +12,7 @@
 #include <strings.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -31,7 +32,6 @@ static receiver_rtcm_out_t rtcm_out = NULL;
 
 static rtcm_framer_t framer;          // only touched by the UART task
 static gnss_monitor_t monitor;        // guarded by lock
-static gnss_monitor_t snapshot;       // copy used to build JSON outside the lock (HTTP task only)
 static line_log_t console;            // guarded by lock
 static SemaphoreHandle_t lock = NULL;
 
@@ -124,18 +124,22 @@ const char *receiver_send_command(const char *cmd, bool confirmed) {
 }
 
 int receiver_live_json(char *out, size_t size) {
-    // Copy under the lock (fast), format afterwards so the UART task never
-    // waits on JSON formatting.
+    // Formatting takes a few ms; the UART-side callbacks wait up to 20 ms for
+    // the lock, and casters are fed before any lock is taken. (A snapshot copy
+    // used to avoid this, but cost 3 KB of RAM, which is tight on the ESP32.)
     if (lock == NULL || xSemaphoreTake(lock, pdMS_TO_TICKS(200)) != pdTRUE) return -1;
-    memcpy(&snapshot, &monitor, sizeof(snapshot));
+    int n = gnss_monitor_json(&monitor, now_ms(), out, size);
     xSemaphoreGive(lock);
-    int n = gnss_monitor_json(&snapshot, now_ms(), out, size);
     // Append framer statistics (outside the monitor, owned by the UART task;
     // reading three counters without the lock is fine for display).
     if (n > 1 && (size_t) n + 400 < size) {
         n--; // drop final '}'
         int r = recorder_status_json(out + n, size - (size_t) n);
         if (r > 0) n += r;
+        n += snprintf(out + n, size - (size_t) n, ",\"heap\":{\"free\":%u,\"min\":%u,\"largest\":%u}",
+                      (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                      (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+                      (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         n += snprintf(out + n, size - (size_t) n,
                       ",\"stream\":{\"rtcm_only\":%s,\"frames\":%lu,\"lines\":%lu,\"garbage\":%lu}}",
                       forward_rtcm_only ? "true" : "false", (unsigned long) framer.frames,
