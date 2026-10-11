@@ -75,11 +75,15 @@
 struct ntrip_caster {
     const ntrip_caster_def_t *def;
 
-    SemaphoreHandle_t lock;
+    // The ring is shared by the UART task (writer) and the caster task (reader).
+    // A spinlock critical section only ever covers one memcpy of at most a few
+    // KB (microseconds), so the writer never has to give up and drop data. The
+    // previous mutex with a 5 ms timeout dropped whole RTCM frames whenever the
+    // reader was pre-empted by WiFi while holding it.
+    portMUX_TYPE ring_mux;
     byte_ring_t ring;
     volatile bool accepting;
     volatile int64_t last_uart_us;
-    volatile uint32_t sink_lock_drops;
 
     TaskHandle_t task;
     int sock;
@@ -130,12 +134,9 @@ static void caster_uart_sink(void *ctx, const uint8_t *data, size_t len) {
     c->last_uart_us = esp_timer_get_time();
 
     if (c->accepting) {
-        if (xSemaphoreTake(c->lock, pdMS_TO_TICKS(5)) == pdTRUE) {
-            byte_ring_write(&c->ring, data, len);
-            xSemaphoreGive(c->lock);
-        } else {
-            c->sink_lock_drops += len;
-        }
+        taskENTER_CRITICAL(&c->ring_mux);
+        byte_ring_write(&c->ring, data, len);
+        taskEXIT_CRITICAL(&c->ring_mux);
     }
 
     xTaskNotifyGive(c->task);
@@ -150,9 +151,9 @@ static bool uart_recently_active(struct ntrip_caster *c) {
 
 static size_t caster_fill(void *ctx, uint8_t *out, size_t max) {
     struct ntrip_caster *c = ctx;
-    xSemaphoreTake(c->lock, portMAX_DELAY);
+    taskENTER_CRITICAL(&c->ring_mux);
     size_t n = byte_ring_read(&c->ring, out, max);
-    xSemaphoreGive(c->lock);
+    taskEXIT_CRITICAL(&c->ring_mux);
     return n;
 }
 
@@ -253,7 +254,7 @@ typedef enum {
 static session_end_t caster_session(struct ntrip_caster *c) {
     const char *TAG = c->def->log_tag;
     uint32_t ip_generation = wifi_sta_ip_generation();
-    uint32_t dropped_seen = c->ring.dropped_total + c->sink_lock_drops;
+    uint32_t dropped_seen = c->ring.dropped_total;
     uint32_t last_drop_log = 0;
     uint8_t rx[64];
 
@@ -299,7 +300,7 @@ static session_end_t caster_session(struct ntrip_caster *c) {
         }
 
         // Report overflow (rate limited)
-        uint32_t dropped = c->ring.dropped_total + c->sink_lock_drops;
+        uint32_t dropped = c->ring.dropped_total;
         if (dropped != dropped_seen && now_ms() - last_drop_log >= CASTER_DROP_LOG_INTERVAL_MS) {
             ESP_LOGW(TAG, "Network slow: dropped %u bytes of RTCM (buffer full)", (unsigned) (dropped - dropped_seen));
             dropped_seen = dropped;
@@ -393,9 +394,9 @@ static void caster_task(void *ctx) {
         uart_nmea("$PESP,NTRIP,%s,CONNECTED,%s:%d,%s", def->nmea_id, host, port, mountpoint);
 
         // Start streaming fresh data
-        xSemaphoreTake(c->lock, portMAX_DELAY);
+        taskENTER_CRITICAL(&c->ring_mux);
         byte_ring_clear(&c->ring);
-        xSemaphoreGive(c->lock);
+        taskEXIT_CRITICAL(&c->ring_mux);
         stream_sender_reset(&c->sender, now_ms());
         c->accepting = true;
         c->sessions++;
@@ -439,7 +440,7 @@ ntrip_caster_handle_t ntrip_caster_start(const ntrip_caster_def_t *def) {
 
     c->def = def;
     c->sock = -1;
-    c->lock = xSemaphoreCreateMutex();
+    portMUX_INITIALIZE(&c->ring_mux);
     byte_ring_init(&c->ring, storage, CASTER_RING_SIZE);
     c->state = NTRIP_CASTER_WAITING_DATA;
     strcpy(c->last_disconnect, "");
@@ -465,7 +466,7 @@ void ntrip_caster_get_status(ntrip_caster_handle_t c, ntrip_caster_status_t *sta
     status->state = c->state;
     status->sessions = c->sessions;
     status->failures = c->failures;
-    status->dropped_bytes = c->ring.dropped_total + c->sink_lock_drops;
+    status->dropped_bytes = c->ring.dropped_total;
     int64_t start = c->session_start_us;
     status->uptime_s = start ? (uint32_t) ((esp_timer_get_time() - start) / 1000000) : 0;
     strlcpy(status->last_disconnect, c->last_disconnect, sizeof(status->last_disconnect));

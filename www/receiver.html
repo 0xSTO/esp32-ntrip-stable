@@ -141,6 +141,45 @@
             </div>
         </div>
     </div>
+    <div class="row">
+        <div class="col-12 mb-3">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    Record RTCM log
+                    <small class="text-muted font-weight-normal">like RTKLIB STRSVR file output</small>
+                </div>
+                <div class="card-body" style="font-size:14px">
+                    <div class="form-inline mb-2">
+                        <label class="mr-2" for="rec-minutes">Duration</label>
+                        <select id="rec-minutes" class="custom-select custom-select-sm mr-2">
+                            <option value="15">15 minutes</option>
+                            <option value="60">1 hour</option>
+                            <option value="120">2 hours</option>
+                            <option value="360" selected>6 hours (AUSPOS)</option>
+                            <option value="720">12 hours</option>
+                            <option value="1440">24 hours</option>
+                        </select>
+                        <button id="rec-start" class="btn btn-sm btn-primary mr-2">Start recording</button>
+                        <button id="rec-stop" class="btn btn-sm btn-outline-danger" style="display:none">Stop and finish file</button>
+                    </div>
+                    <div id="rec-status" class="mb-2 text-muted">Not recording.</div>
+                    <small class="text-muted d-block">
+                        Your browser downloads a <code>.rtcm3</code> file that keeps growing until the time is up or you press
+                        <i>Stop and finish file</i>. Keep this computer awake and on the same WiFi until then &mdash; if the connection
+                        drops the browser may discard the unfinished download. The file contains exactly what the casters receive.
+                        For precise coordinates convert it to RINEX with RTKLIB <b>RTKCONV</b> and submit to
+                        <a href="https://gnss.ga.gov.au/auspos" target="_blank" rel="noopener">AUSPOS</a> (2 h minimum, 6 h or more is better).
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="text-center text-muted py-3" style="font-size:12px">
+        <a href="https://github.com/0xSTO/esp32-ntrip-stable" target="_blank" rel="noopener">esp32-ntrip-stable</a>
+        &middot; based on <a href="https://github.com/incarvr6/esp32-ntrip-DUO" target="_blank" rel="noopener">esp32-ntrip-DUO</a>
+        and <a href="https://github.com/nebkat/esp32-xbee" target="_blank" rel="noopener">ESP32-XBee</a> (GPLv3)
+    </footer>
 </div>
 
 <!-- Base setup dialog -->
@@ -261,6 +300,22 @@
         $('#sky-hint').toggle(plotted === 0 && lastLive !== null);
     }
 
+    // ------------------------------------------------------------------ polling
+    // Don't poll while the tab is hidden (a forgotten tab then costs the ESP32
+    // nothing); resume immediately when it becomes visible. A running setup
+    // sequence keeps polling because it waits for the receiver's replies.
+    function schedule(fn, ms) {
+        setTimeout(function () {
+            if (!document.hidden || running) { fn(); return; }
+            var resume = function () {
+                if (document.hidden && !running) return;
+                document.removeEventListener('visibilitychange', resume);
+                fn();
+            };
+            document.addEventListener('visibilitychange', resume);
+        }, ms);
+    }
+
     // ------------------------------------------------------------------ live view
     var lastLive = null;
     function renderLive(d) {
@@ -313,7 +368,47 @@
                 (m.interval_ms ? ' (' + fmtInterval(m.interval_ms) + ')' : '') + '</span>');
         });
         if (!d.messages.length) msgs.append('<span class="text-muted">none yet</span>');
+
+        renderRecording(d.recording);
     }
+
+    // ------------------------------------------------------------------ recording
+    function fmtBytes(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024).toFixed(0) + ' kB'; }
+    function fmtDur(s) {
+        var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+        return h + ':' + (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+    function renderRecording(r) {
+        if (!r) return;
+        $('#rec-start, #rec-minutes').prop('disabled', r.active);
+        $('#rec-stop').toggle(r.active);
+        var st = $('#rec-status');
+        if (r.active) {
+            st.removeClass('text-muted').html('<span class="status-dot live"></span>Recording <b></b> &mdash; ' +
+                fmtBytes(r.bytes) + ', ' + fmtDur(r.elapsed_s) + ' of ' + fmtDur(r.duration_s) +
+                (r.dropped ? ', <span class="text-danger">' + fmtBytes(r.dropped) + ' dropped (download too slow)</span>' : ''));
+            st.find('b').text(r.file);
+        } else if (r.result) {
+            st.addClass('text-muted').text('Last recording ' + r.result + ': ' + r.file + ', ' + fmtBytes(r.bytes) +
+                (r.dropped ? ', ' + fmtBytes(r.dropped) + ' dropped' : '') + '.');
+        } else {
+            st.addClass('text-muted').text('Not recording.');
+        }
+    }
+    $('#rec-start').on('click', function () {
+        var a = document.createElement('a');
+        a.href = 'receiver/record?minutes=' + encodeURIComponent($('#rec-minutes').val());
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        $(this).prop('disabled', true);
+        $('#rec-status').removeClass('text-muted').text('Starting… your browser should show the download.');
+    });
+    $('#rec-stop').on('click', function () {
+        $.ajax({ url: 'receiver/record/stop', method: 'POST', dataType: 'json', timeout: 8000 })
+            .done(function () { $('#rec-status').text('Finishing the file…'); });
+    });
 
     function pollLive() {
         $.ajax({ url: 'receiver/live', dataType: 'json', timeout: 8000 })
@@ -323,7 +418,7 @@
                 st.find('.status-dot').removeClass('live').addClass('stale');
                 st.find('.text').text('Device not responding');
             })
-            .always(function () { setTimeout(pollLive, 1000); });
+            .always(function () { schedule(pollLive, 1000); });
     }
 
     // ------------------------------------------------------------------ console
@@ -357,7 +452,7 @@
                     }
                 });
             })
-            .always(function () { setTimeout(pollConsole, running ? 300 : 1000); });
+            .always(function () { schedule(pollConsole, running ? 300 : 1000); });
     }
 
     // UM980 replies "$command,<what was sent>,response: OK*xx" (or an error text).

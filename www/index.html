@@ -1,5 +1,6 @@
 <html>
 <head>
+    <meta charset="utf-8">
     <title>ESP32 XBee Config</title>
     <script src="jquery-3.4.1.min.js"></script>
     <script src="bs-4.3.1.bundle.min.js"></script>
@@ -44,8 +45,8 @@
         }
     </style>
     <script>
-        const releases_api_url = 'https://github.com/incarvr6/esp32-ntrip/releases/tag/0.0.1';
-        const releases_html_url = 'https://github.com/incarvr6/esp32-ntrip/releases/tag/0.0.1';
+        const releases_api_url = 'https://api.github.com/repos/0xSTO/esp32-ntrip-stable/releases';
+        const releases_html_url = 'https://github.com/0xSTO/esp32-ntrip-stable/releases';
 
         $.fn.serializeObject = function() {
             var o = {};
@@ -487,7 +488,7 @@
 <body class="bg-light">
     <div class="container">
         <div class="pt-5 text-center">
-            <h2>ESP32 NTRIP Duo <a id="project-version" href="https://github.com/nebkat/esp32-xbee/releases" class="text-muted small"></a> <a id="prerelease-available" class="text-info small" style="display: none">(beta available)</a></h2>
+            <h2>ESP32 NTRIP Duo <a id="project-version" href="https://github.com/0xSTO/esp32-ntrip-stable/releases" class="text-muted small"></a> <a id="prerelease-available" class="text-info small" style="display: none">(beta available)</a></h2>
 
             <p><a href="receiver.html" class="btn btn-primary">Receiver: live view &amp; console &rarr;</a></p>
 
@@ -1143,7 +1144,7 @@
     <footer id="footer" class="bg-dark">
         <div class="container">
             <div class="text-center text-light">
-                <small>&copy; </a> 2024 - <a href="https://github.com/incarvr6" class="text-white">GitHub</a> - <a href="https://github.com/incarvr6/esp32-ntrip" class="text-white">Project</a> - Uptime <span class="uptime">loading...</span> - Heap <span class="heap">loading...</span></small>
+                <small><a href="https://github.com/0xSTO/esp32-ntrip-stable" class="text-white">esp32-ntrip-stable</a> - based on <a href="https://github.com/incarvr6/esp32-ntrip-DUO" class="text-white">esp32-ntrip-DUO</a> and <a href="https://github.com/nebkat/esp32-xbee" class="text-white">ESP32-XBee</a> (GPLv3) - Uptime <span class="uptime">loading...</span> - Heap <span class="heap">loading...</span></small>
             </div>
         </div>
     </footer>

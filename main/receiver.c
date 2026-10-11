@@ -20,6 +20,7 @@
 #include "gnss_monitor.h"
 #include "line_log.h"
 #include "uart.h"
+#include "recorder.h"
 
 static const char *TAG = "RECEIVER";
 
@@ -47,6 +48,7 @@ static bool is_nmea(const char *line) {
 
 static void on_frame(void *ctx, const uint8_t *frame, size_t len) {
     if (forward_rtcm_only && rtcm_out) rtcm_out(frame, len);
+    recorder_feed(frame, len);
     if (xSemaphoreTake(lock, pdMS_TO_TICKS(20)) == pdTRUE) {
         gnss_monitor_rtcm(&monitor, frame, len, now_ms());
         xSemaphoreGive(lock);
@@ -130,8 +132,10 @@ int receiver_live_json(char *out, size_t size) {
     int n = gnss_monitor_json(&snapshot, now_ms(), out, size);
     // Append framer statistics (outside the monitor, owned by the UART task;
     // reading three counters without the lock is fine for display).
-    if (n > 1 && (size_t) n + 120 < size) {
+    if (n > 1 && (size_t) n + 400 < size) {
         n--; // drop final '}'
+        int r = recorder_status_json(out + n, size - (size_t) n);
+        if (r > 0) n += r;
         n += snprintf(out + n, size - (size_t) n,
                       ",\"stream\":{\"rtcm_only\":%s,\"frames\":%lu,\"lines\":%lu,\"garbage\":%lu}}",
                       forward_rtcm_only ? "true" : "false", (unsigned long) framer.frames,
