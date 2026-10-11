@@ -18,8 +18,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LINE_LOG_LINES 48
-#define LINE_LOG_WIDTH 180
+#define LINE_LOG_LINES 32
+#define LINE_LOG_WIDTH 160
 
 typedef struct {
     uint32_t seq;

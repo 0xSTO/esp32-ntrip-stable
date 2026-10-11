@@ -23,7 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define GNSS_MAX_SATS      160
+#define GNSS_MAX_SATS      96   // ~60 tracked at most from one site
 #define GNSS_MAX_MSG_TYPES 24
 #define GNSS_BANDS         4   // 0: L1/E1/B1  1: L2/E5b/B2I  2: L5/E5a/B2a  3: L6/E6/B3
 #define GNSS_SAT_TIMEOUT_MS 5000

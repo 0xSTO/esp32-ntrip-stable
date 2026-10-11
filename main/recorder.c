@@ -22,14 +22,17 @@
 
 static const char *TAG = "RECORDER";
 
-#define RECORDER_RING_SIZE (32 * 1024)   // ~16 s of RTCM at 2 kB/s: rides out WiFi hiccups
+// Reserved once at boot: on the real board a 32 KB malloc when pressing Start
+// failed ("Not enough memory to record"). 12 KB is ~6 s of RTCM, plenty for a
+// browser on the local network.
+#define RECORDER_RING_SIZE (12 * 1024)
 #define RECORDER_CHUNK 2048
 #define RECORDER_MAX_MINUTES (24 * 60)
 #define RECORDER_TASK_STACK 4096
 
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static byte_ring_t ring;
-static uint8_t *ring_storage = NULL;
+static uint8_t ring_storage[RECORDER_RING_SIZE];
 static volatile bool active = false;       // guarded by mux for feed/stop transitions
 static volatile bool stop_requested = false;
 static TaskHandle_t task = NULL;
@@ -92,8 +95,6 @@ out:
     snprintf(last_result, sizeof(last_result), "%s", result);
     ESP_LOGI(TAG, "Recording %s: %u bytes, %u dropped", result, (unsigned) bytes_sent, (unsigned) dropped);
 
-    free(ring_storage);
-    ring_storage = NULL;
     task = NULL;
     vTaskDelete(NULL);
 }
@@ -113,10 +114,6 @@ esp_err_t recorder_start_handler(httpd_req_t *req) {
     if (minutes < 1) minutes = 1;
     if (minutes > RECORDER_MAX_MINUTES) minutes = RECORDER_MAX_MINUTES;
 
-    ring_storage = malloc(RECORDER_RING_SIZE);
-    if (ring_storage == NULL) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Not enough memory to record");
-    }
     byte_ring_init(&ring, ring_storage, RECORDER_RING_SIZE);
 
     // File name: UTC start time if the clock is set (SNTP), else device uptime
@@ -134,8 +131,7 @@ esp_err_t recorder_start_handler(httpd_req_t *req) {
 
     httpd_req_t *async = NULL;
     if (httpd_req_async_handler_begin(req, &async) != ESP_OK) {
-        free(ring_storage);
-        ring_storage = NULL;
+        snprintf(last_result, sizeof(last_result), "could not start (web server busy)");
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not start recording");
     }
     httpd_resp_set_type(async, "application/octet-stream");
@@ -161,10 +157,9 @@ esp_err_t recorder_start_handler(httpd_req_t *req) {
         active = false;
         taskEXIT_CRITICAL(&mux);
         task = NULL;
+        snprintf(last_result, sizeof(last_result), "could not start (out of memory for task)");
         httpd_resp_send_err(async, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not start recording");
         httpd_req_async_handler_complete(async);
-        free(ring_storage);
-        ring_storage = NULL;
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Recording %s for %u min", filename, (unsigned) minutes);

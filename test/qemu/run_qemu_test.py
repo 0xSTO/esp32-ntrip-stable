@@ -522,6 +522,25 @@ def main():
         check(boots == 1, f"no reboot during test (boots={boots})")
         check("Guru Meditation" not in console + uart_text and "abort()" not in console + uart_text, "no panic")
 
+        # Saving settings must restart cleanly (was a PANIC: restart task priority 100 > FreeRTOS max)
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{HTTP_PORT}/config",
+                                   data=json.dumps({"uart_rtcm_only": "1"}).encode()), timeout=15).read()
+        except Exception as e:
+            log(f"config POST: {e}")
+        # QEMU itself can't reboot cleanly after a software reset (its timer
+        # emulation trips the task watchdog at boot), so check the restart was
+        # requested on purpose and no assert fired, which is what crashed the board.
+        def reset_after_restart():
+            txt = open(uart_log, "rb").read().decode(errors="replace")
+            return "CFG,RESTARTING" in txt and "rst:0xc" in txt.split("CFG,RESTARTING", 1)[1]
+        ok = wait_for(reset_after_restart, 30)
+        cons_after = (open(console_log, "rb").read() + open(uart_log, "rb").read()).decode(errors="replace")
+        restarting = any("CFG,RESTARTING" in l for _, l in uart_lines)
+        check(restarting and ok and "assert failed" not in cons_after,
+              f"saving settings restarts on purpose without a crash (restarting={restarting}, reset={ok}, "
+              f"assert={'assert failed' in cons_after})")
+
         disc = [l for _, l in uart_lines if "Disconnected from" in l]
         slow = [l for _, l in uart_lines if "Network slow" in l]
         log(f"{len(disc)} disconnect lines, e.g.: {disc[:3]}")
