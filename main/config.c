@@ -164,6 +164,30 @@ const config_item_t CONFIG_ITEMS[] = {
                 .def.str = ""
         },
 
+        // Built-in caster
+        {
+                .key = KEY_CONFIG_LOCAL_CASTER_ACTIVE,
+                .type = CONFIG_ITEM_TYPE_BOOL,
+                .def.bool1 = false
+        }, {
+                .key = KEY_CONFIG_LOCAL_CASTER_PORT,
+                .type = CONFIG_ITEM_TYPE_UINT16,
+                .def.uint16 = 2101
+        }, {
+                .key = KEY_CONFIG_LOCAL_CASTER_MOUNTPOINT,
+                .type = CONFIG_ITEM_TYPE_STRING,
+                .def.str = "BASE"
+        }, {
+                .key = KEY_CONFIG_LOCAL_CASTER_USERNAME,
+                .type = CONFIG_ITEM_TYPE_STRING,
+                .def.str = ""
+        }, {
+                .key = KEY_CONFIG_LOCAL_CASTER_PASSWORD,
+                .type = CONFIG_ITEM_TYPE_STRING,
+                .secret = true,
+                .def.str = ""
+        },
+
         // UART
         {
                 .key = KEY_CONFIG_UART_NUM,

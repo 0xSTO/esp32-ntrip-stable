@@ -94,6 +94,13 @@ typedef struct config_item {
 #define KEY_CONFIG_NTRIP_CLIENT_USERNAME "ntr_cli_user"
 #define KEY_CONFIG_NTRIP_CLIENT_PASSWORD "ntr_cli_pass"
 
+// Built-in caster for rovers on the same network
+#define KEY_CONFIG_LOCAL_CASTER_ACTIVE "lcst_active"
+#define KEY_CONFIG_LOCAL_CASTER_PORT "lcst_port"
+#define KEY_CONFIG_LOCAL_CASTER_MOUNTPOINT "lcst_mp"
+#define KEY_CONFIG_LOCAL_CASTER_USERNAME "lcst_user"
+#define KEY_CONFIG_LOCAL_CASTER_PASSWORD "lcst_pass"
+
 // UART
 #define KEY_CONFIG_UART_NUM "uart_num"
 #define KEY_CONFIG_UART_TX_PIN "uart_tx_pin"

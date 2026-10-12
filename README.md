@@ -6,7 +6,8 @@ loop, plus a set of WiFi, watchdog and memory-safety fixes. See [STABILITY_CHANG
 
 It also adds a **Receiver** page: an onocoy-style live view (satellites, signals, C/N0 per band, sky view,
 base position) and a console to send UM980 commands from the browser, with a checked "Apply base setup".
-Casters now receive only valid RTCM frames. See [RECEIVER.md](RECEIVER.md).
+Casters now receive only valid RTCM frames. A **built-in caster** lets up to two rovers on the same WiFi take
+corrections straight from the base. See [RECEIVER.md](RECEIVER.md).
 
 Target: classic ESP32 (e.g. ESP32-WROOM-32U), root `main/` tree, ESP-IDF v5.4.2:
 

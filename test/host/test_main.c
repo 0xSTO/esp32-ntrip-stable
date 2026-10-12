@@ -251,8 +251,8 @@ static void test_sender_progress_resets_stall(void) {
     static stream_sender_t s;
     stream_sender_reset(&s, 0);
 
-    // Trickle: one byte every 15 s keeps the connection alive (slower than
-    // the stall limit between progress events would not)
+    // Trickle: one byte every 3/4 of the stall limit keeps the connection
+    // alive (a gap longer than the limit between progress events would not)
     uint8_t data[64];
     memset(data, 'x', sizeof(data));
     byte_ring_write(&h->ring, data, sizeof(data));
@@ -260,7 +260,7 @@ static void test_sender_progress_resets_stall(void) {
     h->accept_per_call = 64;
     for (int i = 0; i < 10; i++) {
         h->budget = 0;
-        t += 15000;
+        t += SENDER_STALL_MS * 3 / 4;
         CHECK(stream_sender_pump(&s, h_fill, h_write, h, t, NULL) != SENDER_STALLED);
         h->budget = 1;
         CHECK(stream_sender_pump(&s, h_fill, h_write, h, t, NULL) == SENDER_BLOCKED); // 1 byte then full

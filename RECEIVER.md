@@ -27,6 +27,11 @@ NMEA sentences are kept out of the console (they feed the sky view).
   messages, optional sky-view data, optional `CONFIG SIGNALGROUP 2` (only needed after a factory reset),
   then `SAVECONFIG`. The dialog shows every command before sending. Each command must be answered with
   `OK` by the receiver; if one fails or gets no answer the sequence stops **before** `SAVECONFIG`.
+- **Heights:** enter the **ellipsoidal** height (AUSPOS "Ellipsoidal height"), not AHD / sea level. The UM980 manual
+  doesn't say which height `MODE BASE lat lon height` expects (it says to set `CONFIG UNDULATION` first, which
+  suggests sea level; users report ellipsoidal). To avoid the question the page converts the coordinates to
+  ECEF and sends `MODE BASE X Y Z`, which has only one meaning. After applying, the page waits for the next
+  RTCM 1005 and reports whether the receiver announces the position you entered (within 1 cm) or how far off it is.
 - **Factory reset** asks for confirmation (the device also refuses `FRESET` without it).
 - The **Port to ESP32** selector is the receiver port wired to the ESP32 (COM1 on this base).
 
@@ -83,10 +88,42 @@ The Receiver page also stops polling while its browser tab is hidden.
 - The Receiver page shows device memory (free / lowest / largest block) in its footer, and says clearly when
   a recording fails to start.
 
+## Built-in caster (rovers on the same network)
+
+Rovers on your WiFi (or on the ESP32's own hotspot) can take corrections straight from the base, without rtk2go
+or onocoy. Switch on **Built-in caster** on the settings page, pick a mountpoint (default `BASE`) and optionally a
+username and password, and save. In the rover app (e.g. SW Maps → NTRIP client) enter:
+
+| Setting | Value |
+|---|---|
+| Host | the base's IP address (shown on the card, e.g. `192.168.0.180`; reserve it in your router) |
+| Port | `2101` (or what you set) |
+| Mountpoint | what you set, e.g. `BASE` |
+| Username / password | only if you set them |
+
+- Up to **2 rovers** at once; a third gets "busy" (503). NTRIP v1 and v2 (v2 uses chunked transfer as the
+  standard requires). The mountpoint list (`GET /`) works without a password.
+- Rovers get exactly what the casters get (RTCM only, with the filter on). Position (GGA) sent by the rover is ignored.
+- A rover that stops reading for 10 s is disconnected; one that is merely slow skips ahead to fresh data. Neither
+  affects the other rover or rtk2go/onocoy.
+- Memory: nothing is used while it's off; about 7 KB while on, plus a 4 KB buffer and the network buffers while
+  rovers are connected. New rovers are refused if free memory would fall below 16 KB, so rtk2go/onocoy always come
+  first. Watch "lowest" in the Receiver page footer the first time you use it.
+- The card shows connected rovers (address, time, data), how many were served and refused.
+
+## Faster rtk2go recovery
+
+rtk2go sometimes stops reading a connection for 20+ s while a fresh connection works straight away (seen in the
+11 Oct device log: only rtk2go stalled, onocoy kept running). The firmware now gives up on a connection that has
+accepted nothing for **10 s** (was 20 s) and reconnects, so these outages shrink from about 25 s to about 15 s.
+
 ## Tests
 
 - `test/host/run_tests.sh` – framer, decoder and console log, cross-checked against pyrtcm on a real
   MSM7 recording (RTKLIB test data, BSD-2) plus synthetic Galileo/1005 frames; random chunking; fuzzing
 - `test/qemu/run_qemu_test.py` – firmware in QEMU: casters receive only valid RTCM, live view and console
   endpoints, commands reach the UART
-- `test/qemu/run_ui_test.py` – the page in headless Chromium against a fake UM980
+- `test/qemu/run_ui_test.py` – the page in headless Chromium against a fake UM980, plus the settings card
+- `test/qemu/run_local_caster_test.py` – built-in caster in QEMU with real NTRIP clients: mountpoint list (v1/v2),
+  wrong/missing password, garbage, silent connections, two rovers at once (v1 + chunked v2) with full-rate gap-free
+  RTCM, third rover refused, a rover that stops reading is dropped without affecting the other rover or the casters

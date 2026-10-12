@@ -32,6 +32,7 @@
 #include <esp_app_desc.h>
 #include <esp_wifi_ap_get_sta_list.h>
 #include <stream_stats.h>
+#include "interface/local_caster.h"
 #include <health.h>
 #include "interface/ntrip.h"
 #include <esp32/rom/crc.h>
@@ -663,6 +664,30 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(caster, "dropped", cs.dropped_bytes);
         cJSON_AddNumberToObject(caster, "uptime", cs.uptime_s);
         cJSON_AddStringToObject(caster, "last_disconnect", cs.last_disconnect);
+    }
+
+    // Built-in caster
+    local_caster_status_t lcs;
+    local_caster_get_status(&lcs);
+    cJSON *lcj = cJSON_AddObjectToObject(root, "local_caster");
+    cJSON_AddBoolToObject(lcj, "active", lcs.active);
+    cJSON_AddBoolToObject(lcj, "listening", lcs.listening);
+    cJSON_AddNumberToObject(lcj, "port", lcs.port);
+    cJSON_AddStringToObject(lcj, "mountpoint", lcs.mountpoint);
+    cJSON_AddBoolToObject(lcj, "auth", lcs.auth);
+    cJSON_AddStringToObject(lcj, "error", lcs.error);
+    cJSON_AddNumberToObject(lcj, "sessions", lcs.sessions);
+    cJSON_AddNumberToObject(lcj, "refused", lcs.refused);
+    cJSON_AddNumberToObject(lcj, "dropped", lcs.dropped);
+    cJSON_AddNumberToObject(lcj, "stack_free", lcs.stack_free);
+    cJSON *lcc = cJSON_AddArrayToObject(lcj, "clients");
+    for (int i = 0; i < lcs.clients; i++) {
+        cJSON *cl = cJSON_CreateObject();
+        cJSON_AddStringToObject(cl, "peer", lcs.client[i].peer);
+        cJSON_AddNumberToObject(cl, "uptime", lcs.client[i].uptime_s);
+        cJSON_AddNumberToObject(cl, "bytes", lcs.client[i].bytes);
+        cJSON_AddBoolToObject(cl, "v2", lcs.client[i].v2);
+        cJSON_AddItemToArray(lcc, cl);
     }
 
     const char *restart_cause = health_restart_cause();
