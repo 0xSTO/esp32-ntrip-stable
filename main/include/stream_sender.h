@@ -26,7 +26,7 @@
 
 #define SENDER_CHUNK_SIZE 1436
 #define SENDER_SLOW_MS 5000u
-#define SENDER_STALL_MS 20000u
+#define SENDER_STALL_MS 10000u
 
 /* Return >0 bytes written, 0 if the socket would block, <0 on a fatal error. */
 typedef int (*sender_write_fn)(void *ctx, const uint8_t *data, size_t len);

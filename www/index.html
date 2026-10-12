@@ -338,6 +338,27 @@
                         $(this).text(text);
                     });
 
+                    // Built-in caster
+                    const lc = data.local_caster;
+                    if (lc && lc.active) {
+                        let t;
+                        if (!lc.listening) t = 'not listening: ' + (lc.error || 'starting');
+                        else if (!lc.clients.length) t = 'waiting for rovers';
+                        else t = lc.clients.map(c => 'rover ' + c.peer.replace(/:\d+$/, '') + ' for ' +
+                                secondsToHHMMSS(c.uptime) + ' (' + humanDataSize(c.bytes) + ')').join(', ');
+                        t += ' · served ' + lc.sessions;
+                        if (lc.refused) t += ', refused ' + lc.refused;
+                        if (lc.dropped) t += ', skipped ' + humanDataSize(lc.dropped);
+                        $('.local-caster-status').text(t);
+                    } else {
+                        $('.local-caster-status').text('');
+                    }
+                    const ip = (data.wifi && data.wifi.sta && data.wifi.sta.ip4) || (data.wifi && data.wifi.ap && data.wifi.ap.ip4);
+                    const lcPort = (lc && lc.listening) ? lc.port : $('[name=lcst_port]').val();
+                    const lcMount = (lc && lc.listening) ? lc.mountpoint : $('[name=lcst_mp]').val();
+                    $('.local-caster-address').text((ip || 'this device\'s IP') + ', port ' + (lcPort || 2101) +
+                            ', mountpoint ' + (lcMount || 'BASE'));
+
                     // WiFi
                     let wifi = data.wifi;
 
@@ -1077,62 +1098,38 @@
                     </div>
                     <div class="card mb-3">
                         <div class="card-header">
-                            NTRIP client
-                            <small class="ntrip-client-stats stream-stats" data-stream="ntrip_client"></small>
+                            Built-in caster <small class="text-muted">(rovers on this network)</small>
+                            <small class="local-caster-stats stream-stats" data-stream="local_caster"></small>
+                            <small class="local-caster-status d-block text-muted"></small>
                             <div class="custom-control custom-switch d-inline float-right">
-                                <input type="checkbox" name="ntr_cli_active" value="1" class="custom-control-input" id="switch-ntrip-client">
-                                <label class="custom-control-label" for="switch-ntrip-client"></label>
-                            </div>
-                            <div class="d-inline mr-1 float-right">
-                                <input type="color" name="ntr_cli_color" data-disable-if="#switch-ntrip-client" value="#ffffff" id="color-ntrip-client">
+                                <input type="checkbox" name="lcst_active" value="1" class="custom-control-input" id="switch-local-caster">
+                                <label class="custom-control-label" for="switch-local-caster"></label>
                             </div>
                         </div>
-                        <div class="card-body" data-disable-if="#switch-ntrip-client">
+                        <div class="card-body" data-disable-if="#switch-local-caster">
                             <div class="form-row mb-3">
-                                <div class="col">
-                                    <label>Host and port</label>
-                                    <div class="input-group">
-                                        <input type="text" name="ntr_cli_host" class="form-control" style="flex-grow: 3" required>
-                                        <div class="input-group-append input-group-prepend">
-                                            <span class="input-group-text">:</span>
-                                        </div>
-                                        <input type="number" name="ntr_cli_port" maxlength="5" min="0" max="65535" class="form-control" required>
-                                    </div>
+                                <div class="col-4">
+                                    <label>Port</label>
+                                    <input type="number" name="lcst_port" maxlength="5" min="1" max="65535" class="form-control" required>
                                 </div>
                                 <div class="col">
                                     <label>Mountpoint</label>
-                                    <div class="input-group">
-                                        <input type="text" name="ntr_cli_mp" class="form-control" maxlength="32" required>
-                                        <!--<div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-toggle="dropdown"></button>
-                                            <div class="dropdown-menu">
-                                                <a class="dropdown-item" href="#">Action</a>
-                                                <a class="dropdown-item" href="#">Another action</a>
-                                                <a class="dropdown-item" href="#">Something else here</a>
-                                                <div role="separator" class="dropdown-divider"></div>
-                                                <a class="dropdown-item" href="#">Separated link</a>
-                                            </div>
-                                        </div>
-                                        <div class="input-group-append">
-                                            <button type="button" class="btn btn-outline-secondary">Search</button>
-                                        </div>-->
-                                    </div>
+                                    <input type="text" name="lcst_mp" class="form-control" maxlength="32" pattern="[A-Za-z0-9_\-]+" title="Letters, digits, - and _ only" required>
                                 </div>
                             </div>
                             <div class="form-row mb-3">
                                 <div class="col">
-                                    <label>Username</label>
-                                    <div class="input-group">
-                                        <input type="text" name="ntr_cli_user" class="form-control">
-                                    </div>
+                                    <label>Username <small class="text-muted">(optional)</small></label>
+                                    <input type="text" name="lcst_user" class="form-control" maxlength="32" autocomplete="off">
                                 </div>
                                 <div class="col">
-                                    <label>Password</label>
-                                    <div class="input-group">
-                                        <input type="password" name="ntr_cli_pass" class="form-control">
-                                    </div>
+                                    <label>Password <small class="text-muted">(optional)</small></label>
+                                    <input type="password" name="lcst_pass" class="form-control" maxlength="32" autocomplete="new-password">
                                 </div>
                             </div>
+                            <small class="text-muted d-block">Point the rover's NTRIP client (e.g. SW Maps) at
+                                <b class="local-caster-address">this device's address</b>. Up to 2 rovers at once. Leave the username
+                                empty for no password. Also works for rovers on the ESP32's own hotspot.</small>
                         </div>
                     </div>
 

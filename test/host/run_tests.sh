@@ -10,6 +10,14 @@ cc -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
     -o "$OUT"
 "$OUT"
 
+# Built-in caster: broadcast ring and NTRIP request parsing
+LC=${TMPDIR:-/tmp}/esp32_ntrip_local_caster_tests
+cc -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \
+    -I"$ROOT/main/include" \
+    local_caster_test.c "$ROOT/main/local_caster_proto.c" \
+    -o "$LC"
+"$LC"
+
 # Receiver framer / GNSS monitor / console log
 RX=${TMPDIR:-/tmp}/esp32_ntrip_receiver_tests
 cc -std=gnu11 -Wall -Wextra -Werror -g -fsanitize=address,undefined \

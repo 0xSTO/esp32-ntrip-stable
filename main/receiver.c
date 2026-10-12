@@ -148,6 +148,17 @@ int receiver_live_json(char *out, size_t size) {
     return n;
 }
 
+bool receiver_position(double *lat_deg, double *lon_deg) {
+    if (lock == NULL || xSemaphoreTake(lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    bool have = monitor.have_position;
+    double ecef[3] = {monitor.ecef[0], monitor.ecef[1], monitor.ecef[2]};
+    xSemaphoreGive(lock);
+    if (!have) return false;
+    double h;
+    gnss_ecef_to_llh(ecef, lat_deg, lon_deg, &h);
+    return true;
+}
+
 int receiver_console_json(uint32_t since, char *out, size_t size) {
     if (lock == NULL || xSemaphoreTake(lock, pdMS_TO_TICKS(200)) != pdTRUE) return -1;
     int n = line_log_json(&console, since, now_ms(), out, size);

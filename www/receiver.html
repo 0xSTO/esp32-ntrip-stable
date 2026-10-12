@@ -168,7 +168,7 @@
                         <i>Stop and finish file</i>. Keep this computer awake and on the same WiFi until then &mdash; if the connection
                         drops the browser may discard the unfinished download. The file contains exactly what the casters receive.
                         For precise coordinates convert it to RINEX with RTKLIB <b>RTKCONV</b> and submit to
-                        <a href="https://gnss.ga.gov.au/auspos" target="_blank" rel="noopener">AUSPOS</a> (2 h minimum, 6 h or more is better).
+                        <a href="https://gnss.ga.gov.au/auspos" target="_blank" rel="noopener">AUSPOS</a> (1 h minimum, 2 h recommended, 6 h or more is better).
                     </small>
                 </div>
             </div>
@@ -198,7 +198,9 @@
                         <div class="col-4"><input id="f-lat" class="form-control form-control-sm" placeholder="Latitude" inputmode="decimal"></div>
                         <div class="col-4"><input id="f-lon" class="form-control form-control-sm" placeholder="Longitude" inputmode="decimal"></div>
                         <div class="col-4"><input id="f-h" class="form-control form-control-sm" placeholder="Height (m)" inputmode="decimal"></div>
-                        <small class="col-12 text-muted">Decimal degrees (south is negative), ellipsoidal height in metres &mdash; e.g. from AUSPOS.
+                        <small class="col-12 text-muted">Decimal degrees (south is negative) and <b>ellipsoidal</b> height in metres
+                            (AUSPOS &ldquo;Ellipsoidal height&rdquo;, <b>not</b> the AHD / sea-level height). The page converts this to
+                            ECEF X/Y/Z, so the receiver can't mistake which height it is.
                             <a href="#" id="use-current">Use the current announced position</a></small>
                         <small id="coord-error" class="col-12 text-danger" style="display:none">Enter plain decimal numbers, e.g. -38.30942616 146.39974564 96.447</small>
                     </div>
@@ -358,6 +360,7 @@
             $('#b-h').text(p.height.toFixed(3) + ' m' + (p.antenna_height ? ' (antenna ' + p.antenna_height.toFixed(3) + ' m)' : ''));
             $('#b-ecef').text(p.x.toFixed(4) + ' / ' + p.y.toFixed(4) + ' / ' + p.z.toFixed(4));
         }
+        checkBase(d);
         var rx = d.receiver;
         $('#b-rx').text([rx.type, rx.firmware].filter(Boolean).join(' · ') || '–');
         $('#b-ant').text([rx.antenna, rx.antenna_serial].filter(Boolean).join(' · ') || '–');
@@ -571,6 +574,27 @@
 
     function port() { return $('#port').val(); }
 
+    // After "Apply base setup": compare the first 1005/1006 received afterwards
+    // with what was sent, so a wrong height interpretation can't go unnoticed.
+    var baseCheck = null;
+    function checkBase(d) {
+        if (!baseCheck) return;
+        var waited = Date.now() - baseCheck.since;
+        var fresh = d.position && d.messages.some(function (m) {
+            return (m.type === 1005 || m.type === 1006) && m.age_ms + 2000 < waited;
+        });
+        if (fresh) {
+            var p = d.position, dist = Math.sqrt(Math.pow(p.x - baseCheck.x, 2) + Math.pow(p.y - baseCheck.y, 2) + Math.pow(p.z - baseCheck.z, 2));
+            if (dist < 0.01) conAppend('✓ Receiver announces the position you entered (within ' + (dist * 1000).toFixed(1) + ' mm).', 'note');
+            else conAppend('✗ Receiver announces a position ' + dist.toFixed(3) + ' m away from what you entered (height ' +
+                           p.height.toFixed(3) + ' m vs ' + baseCheck.c.h + ' m). Check the coordinates.', 'err');
+            baseCheck = null;
+        } else if (waited > 90000) {
+            conAppend('No new base position (RTCM 1005) received within 90 s; check the Base station card later.', 'err');
+            baseCheck = null;
+        }
+    }
+
     var NUM = /^-?\d{1,3}(\.\d+)?$/, HNUM = /^-?\d{1,4}(\.\d+)?$/;
     function coords() {
         var lat = $('#f-lat').val().trim(), lon = $('#f-lon').val().trim(), h = $('#f-h').val().trim();
@@ -581,13 +605,30 @@
                  h: hh.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') };
     }
 
+    // GRS80 / WGS84 (they differ by 0.1 mm) geodetic -> ECEF. The UM980's
+    // "MODE BASE lat lon height" doesn't say whether height is ellipsoidal or
+    // above sea level (the manual says to set CONFIG UNDULATION first, which
+    // suggests sea level). "MODE BASE X Y Z" has no such ambiguity.
+    function toEcef(c) {
+        var a = 6378137, f = 1 / 298.257222101, e2 = f * (2 - f);
+        var la = parseFloat(c.lat) * Math.PI / 180, lo = parseFloat(c.lon) * Math.PI / 180, h = parseFloat(c.h);
+        var N = a / Math.sqrt(1 - e2 * Math.sin(la) * Math.sin(la));
+        return { x: (N + h) * Math.cos(la) * Math.cos(lo), y: (N + h) * Math.cos(la) * Math.sin(lo), z: (N * (1 - e2) + h) * Math.sin(la) };
+    }
+    function baseCmd(c) {
+        var e = toEcef(c);
+        // The receiver tells the two forms apart by the first number (|X| > 90 means ECEF)
+        if (Math.abs(e.x) <= 90) return 'MODE BASE ' + c.lat + ' ' + c.lon + ' ' + c.h;
+        return 'MODE BASE ' + e.x.toFixed(4) + ' ' + e.y.toFixed(4) + ' ' + e.z.toFixed(4);
+    }
+
     function setupSteps() {
         var p = port(), steps = [];
         var mode = $('input[name=mode]:checked').val();
         if ($('#o-signals').prop('checked')) steps.push({ cmd: 'CONFIG SIGNALGROUP 2', restart: true });
         if (mode === 'fixed') {
             var c = coords();
-            steps.push({ cmd: 'MODE BASE ' + (c ? c.lat + ' ' + c.lon + ' ' + c.h : '<lat> <lon> <height>') });
+            steps.push({ cmd: c ? baseCmd(c) : 'MODE BASE <X> <Y> <Z>   (from the coordinates above)' });
         } else {
             steps.push({ cmd: 'MODE BASE TIME 60 2 2.5' });
         }
@@ -609,9 +650,9 @@
     }
     function fillCurrent() {
         if (!lastLive || !lastLive.position) return false;
-        $('#f-lat').val(lastLive.position.lat.toFixed(8));
-        $('#f-lon').val(lastLive.position.lon.toFixed(8));
-        $('#f-h').val(lastLive.position.height.toFixed(3));
+        $('#f-lat').val(lastLive.position.lat.toFixed(9));
+        $('#f-lon').val(lastLive.position.lon.toFixed(9));
+        $('#f-h').val(lastLive.position.height.toFixed(4));
         return true;
     }
     $('#use-current').on('click', function (e) { e.preventDefault(); if (!fillCurrent()) alert('No position received from the receiver yet.'); updatePreview(); });
@@ -625,7 +666,11 @@
         if (fixed && c === null) { $('#coord-error').show(); return; }
         $('#setup-modal').modal('hide');
         runSequence('Applying base setup on ' + port(), setupSteps(), function () {
-            if (fixed) conAppend('Check the Base station card: the announced position should match ' + c.lat + ', ' + c.lon + ', ' + c.h + ' m within a minute.', 'note');
+            if (fixed) {
+                var e = toEcef(c);
+                baseCheck = { x: e.x, y: e.y, z: e.z, since: Date.now(), c: c };
+                conAppend('Waiting for the receiver to announce the new position (RTCM 1005)…', 'note');
+            }
         });
     });
 

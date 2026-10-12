@@ -22,7 +22,7 @@ and WiFi events were delayed. One slow caster knocked out both.
 - Each caster has its own 16 KB ring buffer and its own task that owns the socket. The UART task only copies
   data into the rings (`uart_add_read_sink`); nothing on the UART or event-loop path touches a socket.
 - Non-blocking sends (`MSG_DONTWAIT`). Partial writes are completed, so RTCM frames are never cut.
-- A connection is dropped only if the caster accepts nothing for 20 s while data is waiting. While the link is
+- A connection is dropped only if the caster accepts nothing for 10 s while data is waiting (20 s before v6: rtk2go connections freeze while a fresh connection works at once). While the link is
   merely slow, the ring drops its oldest data instead and logs `Network slow: ...`.
 - TCP keepalive (idle 10 s, interval 5 s, 3 probes), detection of the caster closing the connection, and
   immediate disconnect when WiFi loses its IP.
@@ -69,3 +69,11 @@ and WiFi events were delayed. One slow caster knocked out both.
 - Not yet soak-tested on a real board. Watch rtk2go "restarts" and the web log for `Disconnected ...` and
   `Network slow` lines.
 - Builds for ESP32-S2/S3/C3 (the `esp32s3test` tree and the prebuilt upstream `.bin` files) are not reworked.
+
+### Built-in caster (v6)
+- Rovers on the LAN connect to the ESP32 directly (`main/interface/local_caster.c`, pure logic in
+  `main/local_caster_proto.c`, host tested). Same rules as the outgoing casters: the UART task only copies frames into
+  a broadcast ring under a spinlock; one task owns all sockets (`select()`, non-blocking sends, per-rover cursor).
+- `CONFIG_LWIP_SO_LINGER=y` so a stalled rover's connection is reset on close instead of lwIP holding its queued
+  send data for minutes.
+

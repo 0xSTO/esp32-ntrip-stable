@@ -34,6 +34,9 @@ const char *receiver_send_command(const char *cmd, bool confirmed);
 
 /* JSON snapshots into a caller buffer. Return length or -1. */
 int receiver_live_json(char *out, size_t size);
+
+/* Announced base position (RTCM 1005/1006), if one has been received. */
+bool receiver_position(double *lat_deg, double *lon_deg);
 int receiver_console_json(uint32_t since, char *out, size_t size);
 
 #endif // ESP32_NTRIP_RECEIVER_H

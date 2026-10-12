@@ -37,6 +37,7 @@
 
 #include "uart.h"
 #include "interface/ntrip.h"
+#include "interface/local_caster.h"
 #include "tasks.h"
 #include "health.h"
 
@@ -141,6 +142,7 @@ void app_main()
 
     ntrip_server_init();
     ntrip_server_2_init();
+    local_caster_init();
 
 
 
